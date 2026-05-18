@@ -7,7 +7,7 @@ st.set_page_config(page_title="Seller Flex FR Automator", layout="wide", page_ic
 
 st.title("📦 Automatización Seller Flex FR - Cecopartners")
 st.markdown("""
-Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia y genera por separado los ficheros de subida, almacén y cancelaciones.
+Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia y genera por separado los ficheros de subida, almacén y cancelaciones de forma estricta.
 """)
 
 st.sidebar.header("Carga de Ficheros")
@@ -74,7 +74,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
         st.error("No se pudo procesar correctamente el archivo de Stock. Verifica que sea un CSV válido.")
     else:
         try:
-            # ---- PROCESAMIENTO 1: Extraer números de pedido desde ListarRecogida ----
+            # ---- PROCESAMIENTO 1: Parsear el Fichero ListarRecogida Primero ----
             col_listar_a = df_listar_recogida.columns[0] 
             
             def parse_listar_recogida(text):
@@ -85,31 +85,28 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
                 return pd.Series([n_pedido, id_envio])
 
             df_listar_recogida[['Num_Pedido_LR', 'Id_Envio_LR']] = df_listar_recogida[col_listar_a].apply(parse_listar_recogida)
-            
-            # Crear un mapa exacto: Identificador de pedido -> Número de Pedido Corto
             mapa_envio_pedido = dict(zip(df_listar_recogida['Id_Envio_LR'].str.strip(), df_listar_recogida['Num_Pedido_LR'].str.strip()))
 
-            # ---- PROCESAMIENTO 2: Cruzar Stock con PedidosRecoger de forma prioritaria ----
-            # Limpiar columna de referencias del stock
-            col_stock_ref = df_stock.columns[0]
-            df_stock[col_stock_ref] = df_stock[col_stock_ref].astype(str).str.strip().apply(lambda x: x.lstrip('0'))
-            referencias_disponibles = set(df_stock[col_stock_ref].unique())
-            
-            # Limpiar SKUs en PedidosRecoger y mapear el número de pedido largo
+            # ---- PROCESAMIENTO 2: Limpieza y Mapeo en PedidosRecoger ----
             df_pedidos_recoger['SKU_Limpio'] = df_pedidos_recoger['SKU'].apply(clean_sku)
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # Comprobación estricta de Disponibilidad en el Stock FR
+            # ---- PROCESAMIENTO 3: Comprobación de Stock FR ----
+            col_stock_ref = df_stock.columns[0]
+            df_stock[col_stock_ref] = df_stock[col_stock_ref].astype(str).str.strip().apply(lambda x: x.lstrip('0'))
+            referencias_disponibles = set(df_stock[col_stock_ref].unique())
+            
+            # Clasificamos disponibilidad individual
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['SKU_Limpio'].isin(referencias_disponibles)
             
-            # ---- SEPARACIÓN ABSOLUTA DE DATOS ----
-            df_ok = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == True].copy()
-            df_cancel = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == False].copy()
+            # ---- FILTRADO ABSOLUTO (Garantiza separación total de registros) ----
+            df_ok = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == True].copy().reset_index(drop=True)
+            df_cancel = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == False].copy().reset_index(drop=True)
             
             # ---- CONSTRUCCIÓN DE LOS 3 FICHEROS DE SALIDA ----
             
-            # 1. FICHERO FINAL CECOPARTNERS (Solo los aprobados con stock disponible)
+            # 1. FICHERO FINAL CECOPARTNERS (Sólo los 5 aprobados con stock)
             df_subida_plantilla = pd.DataFrame(columns=df_plantilla.columns)
             if not df_ok.empty:
                 df_subida_plantilla['article'] = df_ok['SKU_Limpio']
@@ -126,7 +123,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
                 df_subida_plantilla['addressee_order_number'] = df_ok['Número_Pedido_Final']
                 df_subida_plantilla['customer_mail'] = df_subida_plantilla['addressee_order_number'].astype(str) + '@sellerflexfr.com'
             
-            # 2. FICHERO DE CANCELACIONES (Estructura Solicitada Exacta - Captura al SKU 2748)
+            # 2. FICHERO DE CANCELACIONES (Estructura Solicitada Exacta - Recoge al SKU 2748)
             df_cancelaciones = pd.DataFrame(columns=['Node ID', 'Order number', 'Shipment ID', 'ASIN', 'Reason'])
             if not df_cancel.empty:
                 df_cancelaciones['Node ID'] = 'SRAN'
@@ -135,7 +132,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
                 df_cancelaciones['ASIN'] = df_cancel['FNSKU']
                 df_cancelaciones['Reason'] = 'OOO'
             
-            # 3. FICHERO D-PEDIDOS Almacén Francia (Solo los aprobados con stock disponible)
+            # 3. FICHERO D-PEDIDOS Almacén Francia (Sólo los 5 aprobados con stock)
             df_almacen_fr = pd.DataFrame()
             if not df_ok.empty:
                 df_almacen_fr['P'] = df_ok['Zona']
@@ -147,7 +144,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
                 df_almacen_fr['NÚMERO DE PEDIDO DE CLIENTE'] = df_ok['Número_Pedido_Final']
                 
             # ---- RENDERIZADO EN STREAMLIT ----
-            st.success("✨ ¡Procesamiento corregido y completado! Los datos se han dividido de manera exacta y sin omisiones.")
+            st.success("✨ ¡Ficheros perfectamente divididos y filtrados por stock!")
             
             pestana1, pestana2, pestana3 = st.tabs(["📤 Fichero Subida (Plantilla Cecopartners)", "❌ Cancelaciones (OOO)", "🇫🇷 D-PEDIDOS Francia"])
             
