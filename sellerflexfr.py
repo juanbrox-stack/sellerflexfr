@@ -101,8 +101,8 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['SKU_Limpio'].isin(referencias_disponibles)
             
             # ---- FILTRADO COMPLETO Y SEPARADO ----
-            df_ok = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == True].copy()
-            df_cancel = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == False].copy()
+            df_ok = df_pedidos_recoger[df_pedidos_recoger['Disponible']].copy()
+            df_cancel = df_pedidos_recoger[~df_pedidos_recoger['Disponible']].copy()
             
             # ---- CONSTRUCCIÓN DE LOS 3 FICHEROS DE SALIDA ----
             
@@ -136,11 +136,13 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
             
             # 2. FICHERO DE CANCELACIONES (Estructura Solicitada Exacta - Recoge al SKU 2748)
             if not df_cancel.empty:
+                asin_col = next((c for c in ['ASIN', 'FNSKU', 'asin', 'fnsku'] if c in df_cancel.columns), None)
+                asin_values = df_cancel[asin_col].tolist() if asin_col else [''] * len(df_cancel)
                 df_cancelaciones = pd.DataFrame({
                     'Node ID': ['SRAN'] * len(df_cancel),
                     'Order number': df_cancel['Número_Pedido_Final'].tolist(),
                     'Shipment ID': df_cancel['Identificador de pedido'].tolist(),
-                    'ASIN': df_cancel['FNSKU'].tolist(),
+                    'ASIN': asin_values,
                     'Reason': ['OOO'] * len(df_cancel)
                 })
             else:
