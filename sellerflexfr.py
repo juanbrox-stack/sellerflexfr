@@ -245,15 +245,17 @@ with tab_fase1:
 with tab_fase2:
     st.header("Fase 2: Generar D-PEDIDOS para Almacén Francia")
     st.markdown("""
-    Tras subir el fichero a Cecopartners y descargar el fichero con la **REFERENCIA** asignada (D-XXXXXX-N SGA),
-    sube aquí ese fichero junto con los datos originales para generar el **D-PEDIDOS** del almacén.
+    Sube el fichero descargado de Cecopartners (con la REFERENCIA `D-XXXXXX-N SGA` ya asignada)
+    junto con ListarRecogida y PedidosRecoger. Se generará el **D-PEDIDOS** con esta estructura:
 
-    | Columna | Fuente |
-    |---|---|
-    | **P** (col A) | ID de lista de recogida (P…) de ListarRecogida / PedidosRecoger |
-    | **U** (col B) | Identificador de envío (Shipment ID) |
-    | **Agencia** (col C) | `AMZN_FR_SH_SD` (siempre) |
-    | **Columnas D en adelante** | Del fichero descargado de Cecopartners, cruzado por **Número de línea de pedido de cliente** |
+    | Col | Cabecera | Fuente |
+    |---|---|---|
+    | A | **P** | Zona (P…) de PedidosRecoger, cruzada por Shipment ID |
+    | B | **U** | Shipment ID — cruzado via ListarRecogida por nº pedido |
+    | C | **Agencia** | `AMZN_FR_SH_SD` (siempre fijo) |
+    | D… | *(resto del fichero Cecopartners)* | Todas las columnas tal cual |
+
+    El cruce: `NÚMERO DE LÍNEA DE PEDIDO DE CLIENTE` (Cecopartners) → ListarRecogida → Shipment ID + Zona P
     """)
 
     col1, col2 = st.columns(2)
@@ -263,88 +265,93 @@ with tab_fase2:
             type=["csv", "xlsx"], key="ceco_result"
         )
     with col2:
-        pedidos_f2_file = st.file_uploader(
-            "📄 PedidosRecoger (para obtener zona P…)",
-            type=["csv", "xlsx"], key="pedidos_f2"
-        )
         listar_f2_file = st.file_uploader(
-            "📄 ListarRecogida (para cruzar Shipment ID ↔ Num Pedido)",
+            "📄 ListarRecogida (col A: nº pedido + ID de envío)",
             type=["csv", "xlsx"], key="listar_f2"
+        )
+        pedidos_f2_file = st.file_uploader(
+            "📄 PedidosRecoger (para obtener la zona P…)",
+            type=["csv", "xlsx"], key="pedidos_f2"
         )
 
     if st.button("▶️ Generar D-PEDIDOS", type="primary", key="btn_fase2"):
-        if not all([ceco_result_file, pedidos_f2_file, listar_f2_file]):
+        if not all([ceco_result_file, listar_f2_file, pedidos_f2_file]):
             st.error("Sube los 3 ficheros para continuar.")
         else:
             with st.spinner("Generando D-PEDIDOS..."):
                 try:
                     df_ceco     = load_excel_or_csv(ceco_result_file)
-                    df_pedidos2 = load_excel_or_csv(pedidos_f2_file)
                     df_listar2  = load_excel_or_csv(listar_f2_file)
+                    df_pedidos2 = load_excel_or_csv(pedidos_f2_file)
 
-                    # ── Parsear ListarRecogida ──
+                    # ── 1. Parsear ListarRecogida: col A → Num_Pedido + Id_Envio ──
+                    # Formato: "406-8213474-0209101 ID de envío: Tcg94cqKD   Listo..."
                     col_lr2 = df_listar2.columns[0]
                     df_listar2[['Num_Pedido', 'Id_Envio']] = df_listar2[col_lr2].apply(parse_listar)
-                    mapa_envio_pedido2 = dict(zip(
-                        df_listar2['Id_Envio'].str.strip(),
-                        df_listar2['Num_Pedido'].str.strip()
-                    ))
-                    # Mapa inverso: num_pedido → shipment_id
-                    mapa_pedido_envio2 = {v: k for k, v in mapa_envio_pedido2.items()}
 
-                    # ── Obtener zona P de PedidosRecoger ──
+                    # Mapa num_pedido → Shipment ID  (para rellenar columna U)
+                    mapa_pedido_shipment = dict(zip(
+                        df_listar2['Num_Pedido'].str.strip(),
+                        df_listar2['Id_Envio'].str.strip()
+                    ))
+
+                    # ── 2. Obtener zona P de PedidosRecoger ──
+                    # Columna Zona (P…) cruzada por Identificador de pedido (Shipment ID)
                     zona_col = next(
                         (c for c in df_pedidos2.columns if 'zona' in c.lower()),
                         df_pedidos2.columns[0]
                     )
-                    id_pedido_col2 = next(
+                    id_col2 = next(
                         (c for c in df_pedidos2.columns if 'identificador de pedido' in c.lower()),
                         None
                     )
-                    if id_pedido_col2 is None:
-                        # Buscar columna con Shipment IDs (empiezan por T)
+                    if id_col2 is None:
+                        # Fallback: columna con valores que empiezan por T (Shipment IDs)
                         for c in df_pedidos2.columns:
                             sample = df_pedidos2[c].dropna().astype(str).head(5).tolist()
                             if any(v.startswith('T') and len(v) > 5 for v in sample):
-                                id_pedido_col2 = c
+                                id_col2 = c
                                 break
 
-                    # Mapa shipment_id → zona P
-                    mapa_envio_zona = dict(zip(
-                        df_pedidos2[id_pedido_col2].astype(str).str.strip(),
+                    # Mapa Shipment ID → Zona P
+                    mapa_shipment_zona = dict(zip(
+                        df_pedidos2[id_col2].astype(str).str.strip(),
                         df_pedidos2[zona_col].astype(str).str.strip()
                     ))
 
-                    # ── Columna de número de pedido en Cecopartners ──
+                    # ── 3. Localizar columna clave en Cecopartners ──
+                    # "NÚMERO DE LÍNEA DE PEDIDO DE CLIENTE" contiene el nº pedido (406-XXXXX)
                     linea_col = next(
                         (c for c in df_ceco.columns
                          if 'línea de pedido de cliente' in c.lower()
-                         or 'linea de pedido de cliente' in c.lower()
-                         or 'addressee_order_number' in c.lower()
-                         or 'numero de linea' in c.lower()),
+                         or 'linea de pedido de cliente' in c.lower()),
                         None
                     )
                     if linea_col is None:
                         st.error(
-                            f"No se encontró columna de número de pedido en Cecopartners.\n"
-                            f"Columnas disponibles: {df_ceco.columns.tolist()}"
+                            f"No se encontró 'NÚMERO DE LÍNEA DE PEDIDO DE CLIENTE' en Cecopartners.\n"
+                            f"Columnas: {df_ceco.columns.tolist()}"
                         )
                         st.stop()
 
-                    # ── Construir D-PEDIDOS ──
-                    df_ceco['_num_pedido']  = df_ceco[linea_col].astype(str).str.strip()
-                    df_ceco['_shipment_id'] = df_ceco['_num_pedido'].map(mapa_pedido_envio2).fillna("")
-                    df_ceco['_zona']        = df_ceco['_shipment_id'].map(mapa_envio_zona).fillna("")
+                    # ── 4. Calcular U y P para cada fila de Cecopartners ──
+                    num_pedidos = df_ceco[linea_col].astype(str).str.strip()
+                    shipment_ids = num_pedidos.map(mapa_pedido_shipment).fillna("")
+                    zonas        = shipment_ids.map(mapa_shipment_zona).fillna("")
 
-                    df_dpedidos = pd.DataFrame()
-                    df_dpedidos['P']       = df_ceco['_zona']
-                    df_dpedidos['U']       = df_ceco['_shipment_id']
-                    df_dpedidos['Agencia'] = 'AMZN_FR_SH_SD'
-
-                    # Añadir todas las columnas del fichero Cecopartners (sin las temporales _)
-                    ceco_cols = [c for c in df_ceco.columns if not c.startswith('_')]
-                    for c in ceco_cols:
+                    # ── 5. Montar D-PEDIDOS: P | U | Agencia | (cols Cecopartners sin la primera FALSE) ──
+                    cols_ceco = list(df_ceco.columns[1:])  # saltar col A (FALSE/checkbox)
+                    df_dpedidos = pd.DataFrame({'P': zonas, 'U': shipment_ids, 'Agencia': 'AMZN_FR_SH_SD'})
+                    for c in cols_ceco:
                         df_dpedidos[c] = df_ceco[c].values
+
+                    # ── 6. Diagnóstico de cruces no encontrados ──
+                    sin_cruce = df_dpedidos[df_dpedidos['U'] == ""]
+                    if not sin_cruce.empty:
+                        st.warning(
+                            f"⚠️ {len(sin_cruce)} fila(s) sin Shipment ID en ListarRecogida "
+                            f"(nº pedido no encontrado). Revisa que los ficheros sean del mismo día."
+                        )
 
                     st.session_state['df_dpedidos']  = df_dpedidos
                     st.session_state['procesado_f2'] = True
