@@ -7,7 +7,7 @@ st.set_page_config(page_title="Seller Flex FR Automator", layout="wide", page_ic
 
 st.title("📦 Automatización Seller Flex FR - Cecopartners")
 st.markdown("""
-Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia y genera por separado los ficheros de subida, almacén y cancelaciones de forma estricta.
+Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia y segmenta de forma estricta los pedidos aptos de las cancelaciones.
 """)
 
 st.sidebar.header("Carga de Ficheros")
@@ -100,51 +100,65 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
             # Clasificamos disponibilidad individual
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['SKU_Limpio'].isin(referencias_disponibles)
             
-            # ---- FILTRADO ABSOLUTO (Garantiza separación total de registros) ----
-            df_ok = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == True].copy().reset_index(drop=True)
-            df_cancel = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == False].copy().reset_index(drop=True)
+            # ---- FILTRADO COMPLETO Y SEPARADO ----
+            df_ok = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == True].copy()
+            df_cancel = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == False].copy()
             
             # ---- CONSTRUCCIÓN DE LOS 3 FICHEROS DE SALIDA ----
             
             # 1. FICHERO FINAL CECOPARTNERS (Sólo los 5 aprobados con stock)
-            df_subida_plantilla = pd.DataFrame(columns=df_plantilla.columns)
             if not df_ok.empty:
-                df_subida_plantilla['article'] = df_ok['SKU_Limpio']
-                df_subida_plantilla['quantity'] = df_ok['Unidades'].fillna(1).astype(int)
-                df_subida_plantilla['customer_name'] = 'AMAZON FLEX'
-                df_subida_plantilla['nif'] = ''
-                df_subida_plantilla['attention_of_customer'] = 'AMAZON FLEX'
-                df_subida_plantilla['address'] = 'Cam.Real de Madrid 117'
-                df_subida_plantilla['postal_code'] = 46292
-                df_subida_plantilla['phone'] = 0
-                df_subida_plantilla['city'] = 'MASSALAVÉS'
-                df_subida_plantilla['country_code'] = 'ES'
-                df_subida_plantilla['comment'] = 0
-                df_subida_plantilla['addressee_order_number'] = df_ok['Número_Pedido_Final']
+                datos_subida = {
+                    'article': df_ok['SKU_Limpio'].tolist(),
+                    'quantity': df_ok['Unidades'].fillna(1).astype(int).tolist(),
+                    'customer_name': ['AMAZON FLEX'] * len(df_ok),
+                    'nif': [''] * len(df_ok),
+                    'attention_of_customer': ['AMAZON FLEX'] * len(df_ok),
+                    'address': ['Cam.Real de Madrid 117'] * len(df_ok),
+                    'postal_code': [46292] * len(df_ok),
+                    'phone': [0] * len(df_ok),
+                    'city': ['MASSALAVÉS'] * len(df_ok),
+                    'country_code': ['ES'] * len(df_ok),
+                    'comment': [0] * len(df_ok),
+                    'addressee_order_number': df_ok['Número_Pedido_Final'].tolist()
+                }
+                # Crear DataFrame y mapear la columna de correo dinámico
+                df_subida_plantilla = pd.DataFrame(datos_subida)
                 df_subida_plantilla['customer_mail'] = df_subida_plantilla['addressee_order_number'].astype(str) + '@sellerflexfr.com'
+                
+                # Reordenar y asegurar que tenga la estructura exacta de la plantilla cargada
+                for col in df_plantilla.columns:
+                    if col not in df_subida_plantilla.columns:
+                        df_subida_plantilla[col] = ''
+                df_subida_plantilla = df_subida_plantilla[df_plantilla.columns]
+            else:
+                df_subida_plantilla = pd.DataFrame(columns=df_plantilla.columns)
             
             # 2. FICHERO DE CANCELACIONES (Estructura Solicitada Exacta - Recoge al SKU 2748)
-            df_cancelaciones = pd.DataFrame(columns=['Node ID', 'Order number', 'Shipment ID', 'ASIN', 'Reason'])
             if not df_cancel.empty:
-                df_cancelaciones['Node ID'] = 'SRAN'
-                df_cancelaciones['Order number'] = df_cancel['Número_Pedido_Final']
-                df_cancelaciones['Shipment ID'] = df_cancel['Identificador de pedido']
-                df_cancelaciones['ASIN'] = df_cancel['FNSKU']
-                df_cancelaciones['Reason'] = 'OOO'
+                df_cancelaciones = pd.DataFrame({
+                    'Node ID': ['SRAN'] * len(df_cancel),
+                    'Order number': df_cancel['Número_Pedido_Final'].tolist(),
+                    'Shipment ID': df_cancel['Identificador de pedido'].tolist(),
+                    'ASIN': df_cancel['FNSKU'].tolist(),
+                    'Reason': ['OOO'] * len(df_cancel)
+                })
+            else:
+                df_cancelaciones = pd.DataFrame(columns=['Node ID', 'Order number', 'Shipment ID', 'ASIN', 'Reason'])
             
             # 3. FICHERO D-PEDIDOS Almacén Francia (Sólo los 5 aprobados con stock)
             df_almacen_fr = pd.DataFrame()
             if not df_ok.empty:
-                df_almacen_fr['P'] = df_ok['Zona']
-                df_almacen_fr['U'] = df_ok['Identificador de pedido']
-                df_almacen_fr['Agencia'] = 'AMZN_FR_SH'
+                df_almacen_fr['P'] = df_ok['Zona'].tolist()
+                df_almacen_fr['U'] = df_ok['Identificador de pedido'].tolist()
+                df_almacen_fr['Agencia'] = ['AMZN_FR_SH'] * len(df_ok)
                 df_almacen_fr['REFERENCIA'] = [f"D26600{114+i}-1 SGA" for i in range(len(df_ok))]
-                df_almacen_fr['NOMBRE DEL CLIENTE'] = 'AMAZON FLEX'
-                df_almacen_fr['ESTADO'] = 'ESPERANDO ETIQUETA'
-                df_almacen_fr['NÚMERO DE PEDIDO DE CLIENTE'] = df_ok['Número_Pedido_Final']
+                df_almacen_fr['NOMBRE DEL CLIENTE'] = ['AMAZON FLEX'] * len(df_ok)
+                df_almacen_fr['ESTADO'] = ['ESPERANDO ETIQUETA'] * len(df_ok)
+                df_almacen_fr['NÚMERO DE PEDIDO DE CLIENTE'] = df_ok['Número_Pedido_Final'].tolist()
                 
             # ---- RENDERIZADO EN STREAMLIT ----
-            st.success("✨ ¡Ficheros perfectamente divididos y filtrados por stock!")
+            st.success("✨ ¡Ficheros divididos con precisión quirúrgica por stock!")
             
             pestana1, pestana2, pestana3 = st.tabs(["📤 Fichero Subida (Plantilla Cecopartners)", "❌ Cancelaciones (OOO)", "🇫🇷 D-PEDIDOS Francia"])
             
