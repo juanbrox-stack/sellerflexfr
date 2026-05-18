@@ -7,7 +7,7 @@ st.set_page_config(page_title="Seller Flex FR Automator", layout="wide", page_ic
 
 st.title("📦 Automatización Seller Flex FR - Cecopartners")
 st.markdown("""
-Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia y genera el fichero final con la estructura exacta de Cecopartners, cantidades dinámicas y correos concatenados.
+Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia y genera los ficheros de subida, almacén y cancelaciones (motivo OOO).
 """)
 
 st.sidebar.header("Carga de Ficheros")
@@ -82,7 +82,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
             df_stock[col_stock_ref] = df_stock[col_stock_ref].astype(str).str.strip().apply(lambda x: x.lstrip('0'))
             referencias_disponibles = set(df_stock[col_stock_ref].unique())
             
-            # Clasificar la disponibilidad de cada artículo en PedidosRecoger
+            # DETERMINACIÓN DIRECTA DE STOCK: Clasificar disponibilidad inmediatamente en PedidosRecoger
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['SKU_Limpio'].isin(referencias_disponibles)
             
             # ---- PROCESAMIENTO 3: Segmentación de la columna A en ListarRecogida ----
@@ -95,38 +95,29 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
                 id_envio = match.group(1) if match else ""
                 return pd.Series([n_pedido, id_envio])
 
-            df_listar_recogida[['Número de Pedido', 'Identificador de Envío']] = df_listar_recogida[col_listar_a].apply(parse_listar_recogida)
+            df_listar_recogida[['Número de Pedido_LR', 'Identificador de Envío_LR']] = df_listar_recogida[col_listar_a].apply(parse_listar_recogida)
             
-            # ---- PROCESAMIENTO 4: Cruzar Disponibilidad General ----
-            envios_disponibles = set(df_pedidos_recoger[df_pedidos_recoger['Disponible'] == True]['Identificador de pedido'].unique())
-            envios_cancelar = set(df_pedidos_recoger[df_pedidos_recoger['Disponible'] == False]['Identificador de pedido'].unique())
+            # ---- PROCESAMIENTO 4: Unificar Datos para Ficheros Finales ----
+            # Cruzamos ListarRecogida con PedidosRecoger usando el identificador de envío como clave primaria
+            df_master = df_pedidos_recoger.merge(
+                df_listar_recogida, 
+                left_on='Identificador de pedido', 
+                right_on='Identificador de Envío_LR', 
+                how='left'
+            )
             
-            def mapear_estado(id_envio):
-                if id_envio in envios_cancelar:
-                    return 'CANCELAR'
-                return 'OK'
-
-            df_listar_recogida['Estado_Stock'] = df_listar_recogida['Identificador de Envío'].apply(mapear_estado)
-            
-            # Mapeo de datos uniendo por Identificador de Pedido para extraer Zona, FNSKU, SKU y Unidades reales
-            df_zona_mapping = df_pedidos_recoger[['Identificador de pedido', 'Zona', 'FNSKU', 'SKU_Limpio', 'Unidades']].drop_duplicates()
-            df_master = df_listar_recogida.merge(df_zona_mapping, left_on='Identificador de Envío', right_on='Identificador de pedido', how='left')
+            # Rellenar número de pedido si venía en blanco desde ListarRecogida
+            df_master['Número_Pedido_Final'] = df_master['Número de Pedido_LR'].fillna('')
             
             # ---- CONSTRUCCIÓN DE LOS FICHEROS DE SALIDA ----
             
-            # 1. FICHERO FINAL CECOPARTNERS (Estructura de Plantilla con Datos Fijos + Email y Unidades Dinámicas)
-            df_ok = df_master[df_master['Estado_Stock'] == 'OK'].drop_duplicates(subset=['Número de Pedido'])
-            
-            # Inicializamos el DataFrame de subida respetando exactamente las columnas de la plantilla
+            # 1. FICHERO FINAL CECOPARTNERS (Solo los que SÍ tienen stock disponible)
+            df_ok = df_master[df_master['Disponible'] == True].drop_duplicates(subset=['Identificador de pedido'])
             df_subida_plantilla = pd.DataFrame(columns=df_plantilla.columns)
             
             if not df_ok.empty:
-                # Mapeamos los datos fijos y las nuevas propiedades dinámicas extraídas
                 df_subida_plantilla['article'] = df_ok['SKU_Limpio']
-                
-                # VARIABLE DINÁMICA: Mapea el valor exacto proveniente de 'Unidades' del archivo PedidosRecoger
                 df_subida_plantilla['quantity'] = df_ok['Unidades'].fillna(1).astype(int)
-                
                 df_subida_plantilla['customer_name'] = 'AMAZON FLEX'
                 df_subida_plantilla['nif'] = ''
                 df_subida_plantilla['attention_of_customer'] = 'AMAZON FLEX'
@@ -136,39 +127,39 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
                 df_subida_plantilla['city'] = 'MASSALAVÉS'
                 df_subida_plantilla['country_code'] = 'ES'
                 df_subida_plantilla['comment'] = 0
-                
-                # Campos dinámicos identificativos
-                df_subida_plantilla['addressee_order_number'] = df_ok['Número de Pedido']
+                df_subida_plantilla['addressee_order_number'] = df_ok['Número_Pedido_Final']
                 df_subida_plantilla['customer_mail'] = df_subida_plantilla['addressee_order_number'].astype(str) + '@sellerflexfr.com'
             
-            # 2. Fichero de Cancelaciones
-            df_cancel = df_master[df_master['Estado_Stock'] == 'CANCELAR']
+            # 2. FICHERO DE CANCELACIONES (Estructura Solicitada Exacta)
+            # Extraemos todos los registros marcados sin stock (como el SKU 2748)
+            df_cancel = df_master[df_master['Disponible'] == False].drop_duplicates(subset=['Identificador de pedido'])
+            
             df_cancelaciones = pd.DataFrame({
                 'Node ID': 'SRAN',
-                'Order number': df_cancel['Número de Pedido'],
-                'Shipment ID': df_cancel['Identificador de Envío'],
+                'Order number': df_cancel['Número_Pedido_Final'],
+                'Shipment ID': df_cancel['Identificador de pedido'],
                 'ASIN': df_cancel['FNSKU'],
                 'Reason': 'OOO'
-            }).dropna(subset=['Shipment ID']).drop_duplicates()
+            })
             
-            # 3. Fichero D-PEDIDOS Almacén Francia
+            # 3. FICHERO D-PEDIDOS Almacén Francia
             df_almacen_fr = pd.DataFrame()
             if not df_ok.empty:
                 df_almacen_fr['P'] = df_ok['Zona']
-                df_almacen_fr['U'] = df_ok['Identificador de Envío']
+                df_almacen_fr['U'] = df_ok['Identificador de pedido']
                 df_almacen_fr['Agencia'] = 'AMZN_FR_SH'
                 df_almacen_fr['REFERENCIA'] = [f"D26600{114+i}-1 SGA" for i in range(len(df_ok))]
                 df_almacen_fr['NOMBRE DEL CLIENTE'] = 'AMAZON FLEX'
                 df_almacen_fr['ESTADO'] = 'ESPERANDO ETIQUETA'
-                df_almacen_fr['NÚMERO DE PEDIDO DE CLIENTE'] = df_ok['Número de Pedido']
+                df_almacen_fr['NÚMERO DE PEDIDO DE CLIENTE'] = df_ok['Número_Pedido_Final']
                 
             # ---- RENDERIZADO EN STREAMLIT ----
-            st.success("✨ ¡Ficheros procesados con éxito! Estructura final calibrada con cantidades y emails variables.")
+            st.success("✨ ¡Ficheros cruzados con éxito! Lógica de cancelaciones ajustada al 100%.")
             
             pestana1, pestana2, pestana3 = st.tabs(["📤 Fichero Subida (Plantilla Cecopartners)", "❌ Cancelaciones", "🇫🇷 D-PEDIDOS Francia"])
             
             with pestana1:
-                st.subheader("Fichero Resultante Cecopartners (Cantidades y Email Dinámicos)")
+                st.subheader("Fichero Resultante Cecopartners (Aptos para Envío)")
                 st.dataframe(df_subida_plantilla)
                 st.download_button(
                     label="📥 Descargar Fichero Subida Cecopartners (Excel)",
@@ -178,7 +169,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
                 )
                 
             with pestana2:
-                st.subheader("Pedidos sin Stock (Para Cancelar)")
+                st.subheader("Fichero de Cancelaciones (Sin Stock / OOO)")
                 st.dataframe(df_cancelaciones)
                 if not df_cancelaciones.empty:
                     st.download_button(
@@ -188,7 +179,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file and plantilla_fi
                         mime="application/vnd.ms-excel"
                     )
                 else:
-                    st.info("No se han detectado pedidos sin stock.")
+                    st.info("No se han detectado pedidos sin stock para cancelar.")
                 
             with pestana3:
                 st.subheader("D-PEDIDOS Almacén Francia")
