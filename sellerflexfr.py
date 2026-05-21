@@ -22,7 +22,7 @@ Esta aplicación descarga automáticamente el **Stock de Francia en tiempo real 
 
 st.sidebar.header("Carga de Ficheros Principales")
 
-# 1. Ya no se pide el archivo de Stock en la barra lateral. Se descarga automáticamente por URL.
+# 1. Mensaje informativo de stock por URL
 st.sidebar.info("🌐 Stock de Francia: Se descarga automáticamente desde Cecotec Cloud en tiempo real.")
 
 # 2. Segundo cargador (Pedidos de la lista de recogida) con su captura de pantalla correspondiente
@@ -43,19 +43,16 @@ def download_stock_from_url():
     url = "https://cecobi.cecotec.cloud/ws/getstocksabanaFranciaX.php"
     try:
         response = requests.get(url, timeout=30)
-        response.raise_for_status()  # Lanza un error si la descarga falla (HTTP 4xx o 5xx)
+        response.raise_for_status()
         
-        # El archivo devuelto es un CSV. Probamos codificaciones típicas europeas
         csv_data = response.content
         for enc in ['utf-8', 'latin-1', 'iso-8859-1']:
             try:
-                # Intentamos leer primero con punto y coma (común en Cecotec)
                 df = pd.read_csv(io.BytesIO(csv_data), sep=';', encoding=enc, on_bad_lines='skip')
                 if len(df.columns) > 1:
                     return df
             except Exception:
                 try:
-                    # Fallback a coma tradicional si falla
                     df = pd.read_csv(io.BytesIO(csv_data), sep=',', encoding=enc, on_bad_lines='skip')
                     if len(df.columns) > 1:
                         return df
@@ -98,7 +95,7 @@ def to_excel(df):
 
 
 def enviar_correo_background(excel_data, filename):
-    """Envía el correo directamente desde el servidor SMTP usando los Secrets de Streamlit."""
+    """Envía el correo desde el servidor SMTP incluyendo destinatarios en CC."""
     try:
         if "email" not in st.secrets:
             st.error("❌ Error: No se ha encontrado la sección [email] en los Secrets de Streamlit.")
@@ -109,7 +106,10 @@ def enviar_correo_background(excel_data, filename):
         sender_email = st.secrets["email"]["sender_email"]
         sender_password = st.secrets["email"]["sender_password"]
         
+        # Destinatarios principales y en copia (CC)
         destinatario = "fr-sellerflex-support@amazon.com"
+        cc_emails = ["juanbrox@cecotec.es", "antoniodiaz@cecotec.es"]
+        
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         asunto = f"Cancel orders {fecha_hoy}"
         cuerpo_mensaje = "Good morning,\n\nI attach one order to cancel.\n\nBest regards."
@@ -117,19 +117,25 @@ def enviar_correo_background(excel_data, filename):
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = destinatario
+        msg['Cc'] = ", ".join(cc_emails)  # Añadir visualmente las direcciones en la cabecera CC
         msg['Subject'] = asunto
         msg.attach(MIMEText(cuerpo_mensaje, 'plain'))
         
+        # Adjuntar el archivo Excel en memoria
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_data)
         encoders.encode_base64(part)
         part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
         msg.attach(part)
         
+        # Lista total de destinatarios para el comando sendmail de SMTP
+        todos_los_destinatarios = [destinatario] + cc_emails
+        
+        # Conexión y autenticación
         server = smtplib.SMTP(smtp_server, smtp_port)
         server.starttls()
         server.login(sender_email, sender_password)
-        server.sendmail(sender_email, destinatario, msg.as_string())
+        server.sendmail(sender_email, todos_los_destinatarios, msg.as_string())
         server.quit()
         return True
     except Exception as e:
@@ -149,7 +155,7 @@ if pedidos_recoger_file and listar_recogida_file:
     df_pedidos_recoger = load_data(pedidos_recoger_file)
     df_listar_recogida = load_data(listar_recogida_file)
     
-    # Estructura fija en memoria de la plantilla de Cecopartners
+    # Estructura de la plantilla de Cecopartners
     columnas_plantilla = [
         'article', 'quantity', 'customer_name', 'nif', 'attention_of_customer', 
         'address', 'postal_code', 'phone', 'city', 'country_code', 
@@ -178,7 +184,7 @@ if pedidos_recoger_file and listar_recogida_file:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # Mapeos auxiliares de Zona e Identificador de Envío vinculados al Número de Pedido de Amazon
+            # Mapeos auxiliares para la pestaña de almacén
             mapa_pedido_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
             mapa_pedido_a_envio = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].str.strip(), df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
 
@@ -199,7 +205,7 @@ if pedidos_recoger_file and listar_recogida_file:
             mapa_referencias_stock = dict(zip(df_stock[col_stock_ref], df_stock[col_stock_cant]))
             df_pedidos_recoger['Stock_Actual'] = df_pedidos_recoger['SKU_Limpio'].map(mapa_referencias_stock).fillna(0)
             
-            # Regla de corte automatizada: stock > 2 disponible. Si stock <= 2, se va a cancelaciones.
+            # Filtrado de corte por stock <= 2
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['Stock_Actual'] > 2
             
             # ---- FILTRADO Y DIVISIÓN ----
@@ -269,13 +275,13 @@ if pedidos_recoger_file and listar_recogida_file:
                     
                     st.markdown("---")
                     st.subheader("📧 Servidor Automatizado de Correo")
-                    st.write("Presiona el siguiente botón para enviar directamente el fichero de cancelaciones a **fr-sellerflex-support@amazon.com** utilizando los recursos del servidor:")
+                    st.write("Presiona el siguiente botón para enviar directamente el fichero de cancelaciones. Se incluirá automáticamente en copia (**CC**) a `juanbrox@cecotec.es` y `antoniodiaz@cecotec.es`:")
                     
                     if st.button("🚀 Enviar Fichero de Cancelación Directamente", type="primary"):
                         with st.spinner("Conectando con el servidor SMTP y enviando correo..."):
                             exito = enviar_correo_background(excel_cancelados, nombre_archivo_cancelados)
                             if exito:
-                                st.success("📬 ¡Correo enviado con éxito! El archivo Excel de cancelaciones ha sido adjuntado de manera automática.")
+                                st.success("📬 ¡Correo enviado con éxito! Soporte de Amazon ha recibido el archivo y los destinatarios asignados han sido incluidos en copia.")
                 else:
                     st.info("No se han detectado pedidos para cancelar.")
                 
