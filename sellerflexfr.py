@@ -109,7 +109,7 @@ def enviar_correo_background(excel_data, filename):
         sender_email = st.secrets["email"]["sender_email"]
         sender_password = st.secrets["email"]["sender_password"]
         
-        destinatario = "juanbrox@cecotec.es"
+        destinatario = "fr-sellerflex-support@amazon.com"
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         asunto = f"Cancel orders {fecha_hoy}"
         cuerpo_mensaje = "Good morning,\n\nI attach one order to cancel.\n\nBest regards."
