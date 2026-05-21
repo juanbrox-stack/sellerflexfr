@@ -8,10 +8,10 @@ st.set_page_config(page_title="Seller Flex FR Automator", layout="wide", page_ic
 
 st.title("📦 Automatización Seller Flex FR - Cecopartners")
 st.markdown("""
-Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia (filtrando referencias con stock ≤ 2) y genera la documentación para Cecopartners, cancelaciones y almacén.
+Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia (filtrando referencias con stock ≤ 2) y genera la documentación para Cecopartners, cancelaciones y el almacén francés.
 """)
 
-st.sidebar.header("Carga de Ficheros")
+st.sidebar.header("Carga de Ficheros Principales")
 
 # 1. Primer cargador
 stock_file = st.sidebar.file_uploader("1. Fichero de Stock FR (CSV)", type=["csv", "txt"])
@@ -75,7 +75,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
     
     st.info("Procesando ficheros... Por favor, espera.")
     
-    # Carga de los DataFrames
+    # Carga de los DataFrames principales
     df_stock = load_data(stock_file, is_stock=True)
     df_pedidos_recoger = load_data(pedidos_recoger_file)
     df_listar_recogida = load_data(listar_recogida_file)
@@ -109,6 +109,10 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
+            # Mapeos auxiliares de Zona e Identificador de Envío vinculados al Número de Pedido de Amazon
+            mapa_pedido_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
+            mapa_pedido_a_envio = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].str.strip(), df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
+
             # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock Disponibles ----
             col_stock_ref = df_stock.columns[0]
             
@@ -126,8 +130,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
             mapa_referencias_stock = dict(zip(df_stock[col_stock_ref], df_stock[col_stock_cant]))
             df_pedidos_recoger['Stock_Actual'] = df_pedidos_recoger['SKU_Limpio'].map(mapa_referencias_stock).fillna(0)
             
-            # NUEVA REGLA DE CORTE: Si el stock actual es estrictamente superior a 2, está disponible. 
-            # Si es igual o inferior a 2, pasa a cancelados.
+            # Regla de corte: stock > 2 disponible. Si stock <= 2, se va a cancelaciones.
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['Stock_Actual'] > 2
             
             # ---- FILTRADO Y DIVISIÓN ----
@@ -136,7 +139,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
             
             # ---- CONSTRUCCIÓN DE LOS FICHEROS DE SALIDA ----
             
-            # 1. FICHERO FINAL CECOPARTNERS (Generado a partir de los datos aptos de la Opción 2)
+            # 1. FICHERO FINAL CECOPARTNERS
             df_subida_plantilla = pd.DataFrame(columns=columnas_plantilla)
             if not df_ok.empty:
                 df_subida_plantilla['article'] = df_ok['SKU_Limpio']
@@ -164,20 +167,9 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
                 })
             else:
                 df_cancelaciones = pd.DataFrame(columns=['Node ID', 'Order number', 'Shipment ID', 'ASIN', 'Reason'])
-            
-            # 3. FICHERO D-PEDIDOS Almacén Francia
-            df_almacen_fr = pd.DataFrame()
-            if not df_ok.empty:
-                df_almacen_fr['P'] = df_ok['Zona']
-                df_almacen_fr['U'] = df_ok['Identificador de pedido']
-                df_almacen_fr['Agencia'] = 'AMZN_FR_SH'
-                df_almacen_fr['REFERENCIA'] = [f"D26600{114+i}-1 SGA" for i in range(len(df_ok))]
-                df_almacen_fr['NOMBRE DEL CLIENTE'] = 'AMAZON FLEX'
-                df_almacen_fr['ESTADO'] = 'ESPERANDO ETIQUETA'
-                df_almacen_fr['NÚMERO DE PEDIDO DE CLIENTE'] = df_ok['Número_Pedido_Final']
                 
             # ---- RENDERIZADO EN STREAMLIT ----
-            st.success("✨ ¡Ficheros generados con éxito! Comprobación de existencias completada (Mínimo > 2 unidades).")
+            st.success("✨ ¡Ficheros base de Cecopartners y Cancelaciones calculados con éxito!")
             
             pestana1, pestana2, pestana3 = st.tabs(["📤 Fichero Subida (Plantilla Cecopartners)", "❌ Cancelaciones (OOO)", "🇫🇷 D-PEDIDOS Francia"])
             
@@ -202,21 +194,59 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
                         mime="application/vnd.ms-excel"
                     )
                 else:
-                    st.info("No se han detectado pedidos para cancelar (Todos tienen stock suficiente).")
+                    st.info("No se han detectado pedidos para cancelar.")
                 
             with pestana3:
-                st.subheader("D-PEDIDOS Almacén Francia")
-                st.dataframe(df_almacen_fr)
-                if not df_almacen_fr.empty:
-                    st.download_button(
-                        label="📥 Descargar D-PEDIDOS Almacén (Excel)",
-                        data=to_excel(df_almacen_fr),
-                        file_name="D-PEDIDOS_FLEX_FR.xlsx",
-                        mime="application/vnd.ms-excel"
-                    )
+                st.subheader("Generación de Fichero Definitivo de Almacén")
+                st.markdown("""
+                **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo para estructurar el definitivo de almacén:
+                """)
+                
+                # CARGADOR EXCLUSIVO INTERNO PARA EL FICHERO RECIÉN DESCARGADO DE CECOPARTNERS
+                cecopartners_downloaded_file = st.file_uploader("Subir Fichero Descargado de Cecopartners (Excel/CSV) para cruzar las D", type=["csv", "xlsx"], key="ceco_almacen")
+                
+                if cecopartners_downloaded_file is not None:
+                    df_ceco_in = load_data(cecopartners_downloaded_file)
+                    
+                    if df_ceco_in is not None and not df_ceco_in.empty:
+                        try:
+                            # Localizar columnas de Cecopartners de forma flexible por minúsculas
+                            dict_cols_ceco = {col.lower(): col for col in df_ceco_in.columns}
+                            col_ceco_ref_d = dict_cols_ceco.get('referencia', df_ceco_in.columns[3] if len(df_ceco_in.columns) > 3 else df_ceco_in.columns[0])
+                            col_ceco_pedido = dict_cols_ceco.get('número de pedido de cliente', dict_cols_ceco.get('addressee_order_number', df_ceco_in.columns[-1]))
+                            
+                            # Construir el fichero definitivo alineando con la estructura del almacén
+                            df_almacen_fr = pd.DataFrame()
+                            
+                            # Claves limpias para cruzar
+                            pedidos_ceco_limpios = df_ceco_in[col_ceco_pedido].astype(str).str.strip()
+                            
+                            df_almacen_fr['P'] = pedidos_ceco_limpios.map(mapa_pedido_a_zona).fillna("")
+                            df_almacen_fr['U'] = pedidos_ceco_limpios.map(mapa_pedido_a_envio).fillna("")
+                            df_almacen_fr['Agencia'] = 'AMZN_FR_SH_SD'
+                            df_almacen_fr['REFERENCIA'] = df_ceco_in[col_ceco_ref_d].astype(str).str.strip()
+                            df_almacen_fr['NOMBRE DEL CLIENTE'] = 'AMAZON FLEX'
+                            df_almacen_fr['ESTADO'] = 'ESPERANDO ETIQUETA'
+                            df_almacen_fr['NÚMERO DE PEDIDO DE CLIENTE'] = pedidos_ceco_limpios
+                            
+                            st.success("🎉 ¡Fichero definitivo para Almacén Francia generado con las 'D' cruzadas exitosamente!")
+                            st.dataframe(df_almacen_fr)
+                            
+                            st.download_button(
+                                label="📥 Descargar D-PEDIDOS Almacén Definitivo (Excel)",
+                                data=to_excel(df_almacen_fr),
+                                file_name="D-PEDIDOS_FLEX_FR_DEFINITIVO.xlsx",
+                                mime="application/vnd.ms-excel"
+                            )
+                        except Exception as ex_cruce:
+                            st.error(f"Error procesando el fichero devuelto de Cecopartners: {ex_cruce}")
+                    else:
+                        st.warning("El archivo de Cecopartners subido está vacío o no es válido.")
+                else:
+                    st.info("⏳ Esperando que subas el archivo descargado de Cecopartners con las referencias D para generar el listado definitivo de almacén.")
 
         except Exception as e:
             st.error(f"Error estructural en las columnas de los ficheros: {e}")
-            st.warning("Asegúrate de que las columnas coincidan exactamente con la estructura de las capturas de pantalla guía.")
+            st.warning("Asegúrate de que las columnas coincidan con las estructuras estándar.")
 else:
-    st.info("👋 Por favor, carga los 3 archivos requeridos en la barra lateral para procesar las fases.")
+    st.info("👋 Por favor, carga los 3 archivos requeridos en la barra lateral para empezar a operar.")
