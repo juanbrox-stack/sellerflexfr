@@ -3,6 +3,7 @@ import pandas as pd
 import re
 import io
 import os
+import requests
 from datetime import datetime
 
 # Librerías para envío de email en segundo plano con adjuntos
@@ -16,42 +17,59 @@ st.set_page_config(page_title="Seller Flex FR Automator", layout="wide", page_ic
 
 st.title("📦 Automatización Seller Flex FR - Cecopartners")
 st.markdown("""
-Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia (filtrando referencias con stock ≤ 2) y genera la documentación para Cecopartners, cancelaciones y el almacén francés.
+Esta aplicación descarga automáticamente el **Stock de Francia en tiempo real desde Cecotec Cloud**, comprueba la disponibilidad (filtrando referencias con stock ≤ 2) y segmenta la información para Cecopartners, cancelaciones por email directo y almacén.
 """)
 
 st.sidebar.header("Carga de Ficheros Principales")
 
-# 1. Primer cargador
-stock_file = st.sidebar.file_uploader("1. Fichero de Stock FR (CSV)", type=["csv", "txt"])
+# 1. Ya no se pide el archivo de Stock en la barra lateral. Se descarga automáticamente por URL.
+st.sidebar.info("🌐 Stock de Francia: Se descarga automáticamente desde Cecotec Cloud en tiempo real.")
 
-# 2. Segundo cargador (Fase 2) con su captura de pantalla correspondiente
+# 2. Segundo cargador (Pedidos de la lista de recogida) con su captura de pantalla correspondiente
 st.sidebar.markdown("---")
-pedidos_recoger_file = st.sidebar.file_uploader("2. Pedidos de la lista de recogida (Excel/CSV)", type=["csv", "xlsx"])
+pedidos_recoger_file = st.sidebar.file_uploader("1. Pedidos de la lista de recogida (Excel/CSV)", type=["csv", "xlsx"])
 if os.path.exists("pedidoslistarecogida.png"):
     st.sidebar.image("pedidoslistarecogida.png", caption="Ayuda: Archivo de pedidos de la lista de recogida", use_container_width=True)
 
-# 3. Tercer cargador con su captura de pantalla correspondiente
+# 3. Tercer cargador (Fichero con ID pedidos) con su captura de pantalla correspondiente
 st.sidebar.markdown("---")
-listar_recogida_file = st.sidebar.file_uploader("3. Fichero con ID pedidos (Excel/CSV)", type=["csv", "xlsx"])
+listar_recogida_file = st.sidebar.file_uploader("2. Fichero con ID pedidos (Excel/CSV)", type=["csv", "xlsx"])
 if os.path.exists("idpedidos.png"):
     st.sidebar.image("idpedidos.png", caption="Ayuda: Archivo con IDs de pedido y envío", use_container_width=True)
 
 
-def load_data(file, is_stock=False):
-    """Carga los ficheros manejando errores de codificación, separadores y filas malformadas."""
+def download_stock_from_url():
+    """Descarga el stock en tiempo real desde la URL de Cecotec Cloud manejando separadores y encodings."""
+    url = "https://cecobi.cecotec.cloud/ws/getstocksabanaFranciaX.php"
+    try:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()  # Lanza un error si la descarga falla (HTTP 4xx o 5xx)
+        
+        # El archivo devuelto es un CSV. Probamos codificaciones típicas europeas
+        csv_data = response.content
+        for enc in ['utf-8', 'latin-1', 'iso-8859-1']:
+            try:
+                # Intentamos leer primero con punto y coma (común en Cecotec)
+                df = pd.read_csv(io.BytesIO(csv_data), sep=';', encoding=enc, on_bad_lines='skip')
+                if len(df.columns) > 1:
+                    return df
+            except Exception:
+                try:
+                    # Fallback a coma tradicional si falla
+                    df = pd.read_csv(io.BytesIO(csv_data), sep=',', encoding=enc, on_bad_lines='skip')
+                    if len(df.columns) > 1:
+                        return df
+                except Exception:
+                    continue
+        return None
+    except Exception as e:
+        st.error(f"❌ Error crítico al conectar o descargar el Stock desde Cecotec Cloud: {e}")
+        return None
+
+def load_data(file):
+    """Carga los ficheros subidos por el usuario (Excel o CSV)."""
     if file is not None:
         if file.name.endswith('.csv') or file.name.endswith('.txt'):
-            if is_stock:
-                for enc in ['utf-8', 'latin-1', 'iso-8859-1']:
-                    try:
-                        file.seek(0)
-                        return pd.read_csv(file, sep=';', encoding=enc, on_bad_lines='skip')
-                    except Exception:
-                        try:
-                            file.seek(0)
-                            return pd.read_csv(file, sep=',', encoding=enc, on_bad_lines='skip')
-                        except Exception:
-                            continue
             try:
                 return pd.read_csv(file, sep=None, engine='python')
             except Exception:
@@ -82,7 +100,6 @@ def to_excel(df):
 def enviar_correo_background(excel_data, filename):
     """Envía el correo directamente desde el servidor SMTP usando los Secrets de Streamlit."""
     try:
-        # Verificar que existen los secrets configurados
         if "email" not in st.secrets:
             st.error("❌ Error: No se ha encontrado la sección [email] en los Secrets de Streamlit.")
             return False
@@ -97,23 +114,20 @@ def enviar_correo_background(excel_data, filename):
         asunto = f"Cancel orders {fecha_hoy}"
         cuerpo_mensaje = "Good morning,\n\nI attach one order to cancel.\n\nBest regards."
         
-        # Configurar el contenedor del mensaje multipart
         msg = MIMEMultipart()
         msg['From'] = sender_email
         msg['To'] = destinatario
         msg['Subject'] = asunto
         msg.attach(MIMEText(cuerpo_mensaje, 'plain'))
         
-        # Adjuntar el archivo Excel en memoria
         part = MIMEBase('application', 'octet-stream')
         part.set_payload(excel_data)
         encoders.encode_base64(part)
         part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
         msg.attach(part)
         
-        # Conexión e inicio de sesión seguro en el servidor SMTP
         server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()  # Activa el cifrado de seguridad TLS
+        server.starttls()
         server.login(sender_email, sender_password)
         server.sendmail(sender_email, destinatario, msg.as_string())
         server.quit()
@@ -123,13 +137,15 @@ def enviar_correo_background(excel_data, filename):
         return False
 
 
-# Verificar que los 3 ficheros requeridos han sido subidos
-if stock_file and pedidos_recoger_file and listar_recogida_file:
+# Verificar que los 2 ficheros manuales requeridos han sido subidos
+if pedidos_recoger_file and listar_recogida_file:
     
-    st.info("Procesando ficheros... Por favor, espera.")
+    st.info("📥 Conectando con Cecotec Cloud y procesando ficheros... Por favor, espera.")
     
-    # Carga de los DataFrames principales
-    df_stock = load_data(stock_file, is_stock=True)
+    # 1. Descarga automática del Stock desde la URL
+    df_stock = download_stock_from_url()
+    
+    # 2. Carga de los DataFrames manuales
     df_pedidos_recoger = load_data(pedidos_recoger_file)
     df_listar_recogida = load_data(listar_recogida_file)
     
@@ -141,10 +157,10 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
     ]
     
     if df_stock is None or df_stock.empty:
-        st.error("No se pudo procesar correctamente el archivo de Stock. Verifica que sea un CSV válido.")
+        st.error("No se pudo obtener o procesar el archivo de Stock automático desde la URL. Por favor, revisa la conexión o el servidor Cecobi.")
     else:
         try:
-            # ---- PROCESAMIENTO 1: Parsear el Fichero Opcion 3 (ID Pedidos) ----
+            # ---- PROCESAMIENTO 1: Parsear el Fichero de la Opción 2 (ID Pedidos) ----
             col_listar_a = df_listar_recogida.columns[0] 
             
             def parse_listar_recogida(text):
@@ -157,7 +173,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
             df_listar_recogida[['Num_Pedido_LR', 'Id_Envio_LR']] = df_listar_recogida[col_listar_a].apply(parse_listar_recogida)
             mapa_envio_pedido = dict(zip(df_listar_recogida['Id_Envio_LR'].str.strip(), df_listar_recogida['Num_Pedido_LR'].str.strip()))
 
-            # ---- PROCESAMIENTO 2: Limpieza y Mapeo en Opcion 2 (Pedidos de Lista de Recogida) ----
+            # ---- PROCESAMIENTO 2: Limpieza y Mapeo en la Opción 1 (Pedidos de Lista de Recogida) ----
             df_pedidos_recoger['SKU_Limpio'] = df_pedidos_recoger['SKU'].apply(clean_sku)
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
@@ -166,7 +182,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
             mapa_pedido_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
             mapa_pedido_a_envio = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].str.strip(), df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
 
-            # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock Disponibles ----
+            # ---- PROCESAMIENTO 3: Mapeo del Stock Descargado de la URL ----
             col_stock_ref = df_stock.columns[0]
             
             col_stock_cant = None
@@ -183,7 +199,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
             mapa_referencias_stock = dict(zip(df_stock[col_stock_ref], df_stock[col_stock_cant]))
             df_pedidos_recoger['Stock_Actual'] = df_pedidos_recoger['SKU_Limpio'].map(mapa_referencias_stock).fillna(0)
             
-            # Regla de corte: stock > 2 disponible. Si stock <= 2, se va a cancelaciones.
+            # Regla de corte automatizada: stock > 2 disponible. Si stock <= 2, se va a cancelaciones.
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['Stock_Actual'] > 2
             
             # ---- FILTRADO Y DIVISIÓN ----
@@ -222,7 +238,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
                 df_cancelaciones = pd.DataFrame(columns=['Node ID', 'Order number', 'Shipment ID', 'ASIN', 'Reason'])
                 
             # ---- RENDERIZADO EN STREAMLIT ----
-            st.success("✨ ¡Ficheros base de Cecopartners y Cancelaciones calculados con éxito!")
+            st.success("✨ ¡Ficheros base calculados con éxito! Stock descargado automáticamente desde la nube de Cecotec.")
             
             pestana1, pestana2, pestana3 = st.tabs(["📤 Fichero Subida (Plantilla Cecopartners)", "❌ Cancelaciones (OOO)", "🇫🇷 D-PEDIDOS Francia"])
             
@@ -241,7 +257,6 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
                 st.dataframe(df_cancelaciones)
                 
                 if not df_cancelaciones.empty:
-                    # Botón de descarga normal
                     excel_cancelados = to_excel(df_cancelaciones)
                     nombre_archivo_cancelados = "CancelOrders_SellerFlexFR.xlsx"
                     
@@ -256,7 +271,6 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
                     st.subheader("📧 Servidor Automatizado de Correo")
                     st.write("Presiona el siguiente botón para enviar directamente el fichero de cancelaciones a **fr-sellerflex-support@amazon.com** utilizando los recursos del servidor:")
                     
-                    # NUEVO BOTÓN AUTOMÁTICO EN BACKGROUND
                     if st.button("🚀 Enviar Fichero de Cancelación Directamente", type="primary"):
                         with st.spinner("Conectando con el servidor SMTP y enviando correo..."):
                             exito = enviar_correo_background(excel_cancelados, nombre_archivo_cancelados)
@@ -271,7 +285,6 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
                 **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo para estructurar el definitivo de almacén:
                 """)
                 
-                # CARGADOR EXCLUSIVO INTERNO PARA EL FICHERO RECIÉN DESCARGADO DE CECOPARTNERS
                 cecopartners_downloaded_file = st.file_uploader("Subir Fichero Descargado de Cecopartners (Excel/CSV) para cruzar las D", type=["csv", "xlsx"], key="ceco_almacen")
                 
                 if cecopartners_downloaded_file is not None:
@@ -314,4 +327,4 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
             st.error(f"Error estructural en las columnas de los ficheros: {e}")
             st.warning("Asegúrate de que las columnas coincidan con las estructuras estándar.")
 else:
-    st.info("👋 Por favor, carga los 3 archivos requeridos en la barra lateral para empezar a operar.")
+    st.info("👋 Por favor, carga los 2 archivos manuales requeridos en la barra lateral para empezar a operar.")
