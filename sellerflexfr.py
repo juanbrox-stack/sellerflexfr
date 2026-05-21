@@ -4,6 +4,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
+import re
 
 def enviar_correo_almacen_francia(excel_data, filename):
     try:
@@ -21,7 +22,7 @@ def enviar_correo_almacen_francia(excel_data, filename):
         msg['From'] = sender_email
         msg['To'] = destinatario
         msg['Cc'] = ", ".join(cc_emails)
-        msg['Subject'] = f"Fichero D-PEDIDOS FLEX FR DEFINITIVO"
+        msg['Subject'] = "Fichero D-PEDIDOS FLEX FR DEFINITIVO"
         msg.attach(MIMEText("Buenos días,\n\nAdjunto el archivo definitivo D-PEDIDOS de Seller Flex Francia con las referencias D conciliadas para su preparación.\n\nUn saludo.", 'plain'))
         
         part = MIMEBase('application', 'octet-stream')
@@ -213,7 +214,7 @@ if pedidos_recoger_file and listar_recogida_file:
                 text = str(text).strip()
                 partes = text.split()
                 n_pedido = partes[0] if len(partes) > 0 else ""
-                # Separación fija: la U (Shipment ID) siempre son los últimos 9 caracteres
+                # Separación fija: los últimos 9 caracteres corresponden de forma exacta a la U (Shipment ID)
                 id_envio = text[-9:].strip() if len(text) >= 9 else ""
                 return pd.Series([n_pedido, id_envio])
 
@@ -225,7 +226,7 @@ if pedidos_recoger_file and listar_recogida_file:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # Mapeos auxiliares para la pestaña de almacén en session_state (Cruce bidireccional por Nº pedido y por Shipment ID)
+            # Mapeos auxiliares guardados en session_state (Cruce bidireccional por Nº pedido y por Shipment ID)
             mapa_p = {}
             mapa_u = {}
             for _, r in df_pedidos_recoger.iterrows():
@@ -239,7 +240,7 @@ if pedidos_recoger_file and listar_recogida_file:
                 if ident and ident != "nan" and ident != "":
                     mapa_p[ident] = zona_val
                     mapa_u[ident] = ident
-            
+                    
             st.session_state['mapa_pedido_a_zona'] = mapa_p
             st.session_state['mapa_pedido_a_envio'] = mapa_u
 
@@ -355,7 +356,9 @@ if pedidos_recoger_file and listar_recogida_file:
                         try:
                             dict_cols_ceco = {col.lower(): col for col in df_ceco_in.columns}
                             col_ceco_ref_d = dict_cols_ceco.get('referencia', df_ceco_in.columns[3] if len(df_ceco_in.columns) > 3 else df_ceco_in.columns[0])
-                            col_ceco_pedido = dict_cols_ceco.get('número de pedido de cliente', dict_cols_ceco.get('addressee_order_number', df_ceco_in.columns[-1]))
+                            
+                            # Corrección de cabecera crítica: Se prioriza 'número de línea de pedido de cliente' que contiene el formato 4XX- de Amazon
+                            col_ceco_pedido = dict_cols_ceco.get('número de línea de pedido de cliente', dict_cols_ceco.get('número de pedido de cliente', dict_cols_ceco.get('addressee_order_number', df_ceco_in.columns[-1])))
                             
                             df_almacen_fr = pd.DataFrame()
                             pedidos_ceco_limpios = df_ceco_in[col_ceco_pedido].astype(str).str.strip()
@@ -393,7 +396,7 @@ if pedidos_recoger_file and listar_recogida_file:
                                     if exito_envio:
                                         st.success("📬 ¡Correo enviado con éxito al Almacén de Francia! Los destinatarios asignados han sido incluidos en copia.")
                                     else:
-                                        st.error("❌ No se pudo enviar el correo. Revisa la configuración SMTP.")
+                                        st.error("❌ No se pudo enviar el correo de manera automática. Por favor verifica la sección [email] en tus Secrets.")
                         except Exception as ex_cruce:
                             st.error(f"Error procesando el fichero devuelto de Cecopartners: {ex_cruce}")
                     else:
