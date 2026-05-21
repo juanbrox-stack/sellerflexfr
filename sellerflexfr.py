@@ -8,25 +8,25 @@ st.set_page_config(page_title="Seller Flex FR Automator", layout="wide", page_ic
 
 st.title("📦 Automatización Seller Flex FR - Cecopartners")
 st.markdown("""
-Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia y genera los ficheros correspondientes para la subida a Cecopartners, almacén y cancelaciones.
+Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia (filtrando referencias con stock ≤ 2) y genera la documentación para Cecopartners, cancelaciones y almacén.
 """)
 
 st.sidebar.header("Carga de Ficheros")
 
-# 1. Primer cargador con nombre modificado
+# 1. Primer cargador
 stock_file = st.sidebar.file_uploader("1. Fichero de Stock FR (CSV)", type=["csv", "txt"])
 
-# 2. Segundo cargador con nombre modificado y captura de pantalla de ayuda
+# 2. Segundo cargador (Fase 2) con su captura de pantalla correspondiente
 st.sidebar.markdown("---")
 pedidos_recoger_file = st.sidebar.file_uploader("2. Pedidos de la lista de recogida (Excel/CSV)", type=["csv", "xlsx"])
 if os.path.exists("pedidoslistarecogida.png"):
-    st.sidebar.image("pedidoslistarecogida.png", caption="Ejemplo de Pedidos de la lista de recogida", use_container_width=True)
+    st.sidebar.image("pedidoslistarecogida.png", caption="Ayuda: Archivo de pedidos de la lista de recogida", use_container_width=True)
 
-# 3. Tercer cargador con nombre modificado y captura de pantalla de ayuda
+# 3. Tercer cargador con su captura de pantalla correspondiente
 st.sidebar.markdown("---")
 listar_recogida_file = st.sidebar.file_uploader("3. Fichero con ID pedidos (Excel/CSV)", type=["csv", "xlsx"])
 if os.path.exists("idpedidos.png"):
-    st.sidebar.image("idpedidos.png", caption="Ejemplo de Fichero con ID pedidos", use_container_width=True)
+    st.sidebar.image("idpedidos.png", caption="Ayuda: Archivo con IDs de pedido y envío", use_container_width=True)
 
 
 def load_data(file, is_stock=False):
@@ -80,7 +80,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
     df_pedidos_recoger = load_data(pedidos_recoger_file)
     df_listar_recogida = load_data(listar_recogida_file)
     
-    # Definición de la Plantilla Seller Flex en memoria para no pedir el 4º archivo
+    # Estructura fija en memoria de la plantilla de Cecopartners
     columnas_plantilla = [
         'article', 'quantity', 'customer_name', 'nif', 'attention_of_customer', 
         'address', 'postal_code', 'phone', 'city', 'country_code', 
@@ -91,7 +91,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
         st.error("No se pudo procesar correctamente el archivo de Stock. Verifica que sea un CSV válido.")
     else:
         try:
-            # ---- PROCESAMIENTO 1: Parsear el Fichero ListarRecogida Primero ----
+            # ---- PROCESAMIENTO 1: Parsear el Fichero Opcion 3 (ID Pedidos) ----
             col_listar_a = df_listar_recogida.columns[0] 
             
             def parse_listar_recogida(text):
@@ -104,43 +104,39 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
             df_listar_recogida[['Num_Pedido_LR', 'Id_Envio_LR']] = df_listar_recogida[col_listar_a].apply(parse_listar_recogida)
             mapa_envio_pedido = dict(zip(df_listar_recogida['Id_Envio_LR'].str.strip(), df_listar_recogida['Num_Pedido_LR'].str.strip()))
 
-            # ---- PROCESAMIENTO 2: Limpieza y Mapeo en PedidosRecoger ----
+            # ---- PROCESAMIENTO 2: Limpieza y Mapeo en Opcion 2 (Pedidos de Lista de Recogida) ----
             df_pedidos_recoger['SKU_Limpio'] = df_pedidos_recoger['SKU'].apply(clean_sku)
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
             # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock Disponibles ----
-            col_stock_ref = df_stock.columns[0] # Usualmente la primera columna (SKU / Referencia)
+            col_stock_ref = df_stock.columns[0]
             
-            # Intentamos buscar de forma dinámica la columna de cantidad física o disponible en el stock
             col_stock_cant = None
             for col in df_stock.columns:
                 if any(x in col.lower() for x in ['disponible', 'physique', 'stock', 'cantidad', 'unidades']):
                     col_stock_cant = col
                     break
             if not col_stock_cant:
-                col_stock_cant = df_stock.columns[1] # Si no la encuentra por nombre, asume la segunda columna
+                col_stock_cant = df_stock.columns[1]
             
-            # Limpiar referencias del almacén de stock
             df_stock[col_stock_ref] = df_stock[col_stock_ref].astype(str).str.strip().apply(lambda x: x.lstrip('0'))
-            
-            # Convertir cantidades de stock a números para poder operar matemáticamente
             df_stock[col_stock_cant] = pd.to_numeric(df_stock[col_stock_cant], errors='coerce').fillna(0)
             
-            # Crear un mapa exacto: SKU -> Cantidad disponible en Stock
             mapa_referencias_stock = dict(zip(df_stock[col_stock_ref], df_stock[col_stock_cant]))
-            
-            # Obtener el stock para cada pedido (si no existe el SKU en stock, asumimos 0)
             df_pedidos_recoger['Stock_Actual'] = df_pedidos_recoger['SKU_Limpio'].map(mapa_referencias_stock).fillna(0)
             
-            # NUEVA MEJORA: Límite de stock a 2. Si el stock es <= 2, "Disponible" pasa a ser False (se cancela)
+            # NUEVA REGLA DE CORTE: Si el stock actual es estrictamente superior a 2, está disponible. 
+            # Si es igual o inferior a 2, pasa a cancelados.
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['Stock_Actual'] > 2
             
-            # ---- CONSTRUCCIÓN DE LOS FICHEROS DE SALIDA ----
+            # ---- FILTRADO Y DIVISIÓN ----
             df_ok = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == True].copy()
             df_cancel = df_pedidos_recoger[df_pedidos_recoger['Disponible'] == False].copy()
             
-            # 1. FICHERO FINAL CECOPARTNERS
+            # ---- CONSTRUCCIÓN DE LOS FICHEROS DE SALIDA ----
+            
+            # 1. FICHERO FINAL CECOPARTNERS (Generado a partir de los datos aptos de la Opción 2)
             df_subida_plantilla = pd.DataFrame(columns=columnas_plantilla)
             if not df_ok.empty:
                 df_subida_plantilla['article'] = df_ok['SKU_Limpio']
@@ -158,13 +154,16 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
                 df_subida_plantilla['customer_mail'] = df_subida_plantilla['addressee_order_number'].astype(str) + '@sellerflexfr.com'
             
             # 2. FICHERO DE CANCELACIONES
-            df_cancelaciones = pd.DataFrame({
-                'Node ID': 'SRAN',
-                'Order number': df_cancel['Número_Pedido_Final'],
-                'Shipment ID': df_cancel['Identificador de pedido'],
-                'ASIN': df_cancel['FNSKU'],
-                'Reason': 'OOO'
-            })
+            if not df_cancel.empty:
+                df_cancelaciones = pd.DataFrame({
+                    'Node ID': 'SRAN',
+                    'Order number': df_cancel['Número_Pedido_Final'],
+                    'Shipment ID': df_cancel['Identificador de pedido'],
+                    'ASIN': df_cancel['FNSKU'],
+                    'Reason': 'OOO'
+                })
+            else:
+                df_cancelaciones = pd.DataFrame(columns=['Node ID', 'Order number', 'Shipment ID', 'ASIN', 'Reason'])
             
             # 3. FICHERO D-PEDIDOS Almacén Francia
             df_almacen_fr = pd.DataFrame()
@@ -178,7 +177,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
                 df_almacen_fr['NÚMERO DE PEDIDO DE CLIENTE'] = df_ok['Número_Pedido_Final']
                 
             # ---- RENDERIZADO EN STREAMLIT ----
-            st.success("✨ ¡Ficheros procesados con éxito aplicando las mejoras de interfaz y la regla de stock mínimo (<=2)!")
+            st.success("✨ ¡Ficheros generados con éxito! Comprobación de existencias completada (Mínimo > 2 unidades).")
             
             pestana1, pestana2, pestana3 = st.tabs(["📤 Fichero Subida (Plantilla Cecopartners)", "❌ Cancelaciones (OOO)", "🇫🇷 D-PEDIDOS Francia"])
             
@@ -203,7 +202,7 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
                         mime="application/vnd.ms-excel"
                     )
                 else:
-                    st.info("No se han detectado pedidos para cancelar.")
+                    st.info("No se han detectado pedidos para cancelar (Todos tienen stock suficiente).")
                 
             with pestana3:
                 st.subheader("D-PEDIDOS Almacén Francia")
@@ -218,6 +217,6 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
 
         except Exception as e:
             st.error(f"Error estructural en las columnas de los ficheros: {e}")
-            st.warning("Verifica que los ficheros mantengan los nombres de columnas estándar.")
+            st.warning("Asegúrate de que las columnas coincidan exactamente con la estructura de las capturas de pantalla guía.")
 else:
-    st.info("👋 Por favor, sube los 3 archivos solicitados en la barra lateral para empezar a operar.")
+    st.info("👋 Por favor, carga los 3 archivos requeridos en la barra lateral para procesar las fases.")
