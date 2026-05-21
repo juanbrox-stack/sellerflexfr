@@ -3,6 +3,14 @@ import pandas as pd
 import re
 import io
 import os
+from datetime import datetime
+
+# Librerías para envío de email en segundo plano con adjuntos
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 
 st.set_page_config(page_title="Seller Flex FR Automator", layout="wide", page_icon="📦")
 
@@ -69,6 +77,51 @@ def to_excel(df):
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Datos')
     return output.getvalue()
+
+
+def enviar_correo_background(excel_data, filename):
+    """Envía el correo directamente desde el servidor SMTP usando los Secrets de Streamlit."""
+    try:
+        # Verificar que existen los secrets configurados
+        if "email" not in st.secrets:
+            st.error("❌ Error: No se ha encontrado la sección [email] en los Secrets de Streamlit.")
+            return False
+            
+        smtp_server = st.secrets["email"]["smtp_server"]
+        smtp_port = st.secrets["email"]["smtp_port"]
+        sender_email = st.secrets["email"]["sender_email"]
+        sender_password = st.secrets["email"]["sender_password"]
+        
+        destinatario = "fr-sellerflex-support@amazon.com"
+        fecha_hoy = datetime.now().strftime("%d/%m/%Y")
+        asunto = f"Cancel orders {fecha_hoy}"
+        cuerpo_mensaje = "Good morning,\n\nI attach one order to cancel.\n\nBest regards."
+        
+        # Configurar el contenedor del mensaje multipart
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = destinatario
+        msg['Subject'] = asunto
+        msg.attach(MIMEText(cuerpo_mensaje, 'plain'))
+        
+        # Adjuntar el archivo Excel en memoria
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(excel_data)
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+        msg.attach(part)
+        
+        # Conexión e inicio de sesión seguro en el servidor SMTP
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()  # Activa el cifrado de seguridad TLS
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, destinatario, msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"❌ Error al enviar el correo a través del servidor: {e}")
+        return False
+
 
 # Verificar que los 3 ficheros requeridos han sido subidos
 if stock_file and pedidos_recoger_file and listar_recogida_file:
@@ -186,13 +239,29 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
             with pestana2:
                 st.subheader("Fichero de Cancelaciones")
                 st.dataframe(df_cancelaciones)
+                
                 if not df_cancelaciones.empty:
+                    # Botón de descarga normal
+                    excel_cancelados = to_excel(df_cancelaciones)
+                    nombre_archivo_cancelados = "CancelOrders_SellerFlexFR.xlsx"
+                    
                     st.download_button(
                         label="📥 Descargar Fichero Cancelaciones (Excel)",
-                        data=to_excel(df_cancelaciones),
-                        file_name="CancelOrders_SellerFlexFR.xlsx",
+                        data=excel_cancelados,
+                        file_name=nombre_archivo_cancelados,
                         mime="application/vnd.ms-excel"
                     )
+                    
+                    st.markdown("---")
+                    st.subheader("📧 Servidor Automatizado de Correo")
+                    st.write("Presiona el siguiente botón para enviar directamente el fichero de cancelaciones a **fr-sellerflex-support@amazon.com** utilizando los recursos del servidor:")
+                    
+                    # NUEVO BOTÓN AUTOMÁTICO EN BACKGROUND
+                    if st.button("🚀 Enviar Fichero de Cancelación Directamente", type="primary"):
+                        with st.spinner("Conectando con el servidor SMTP y enviando correo..."):
+                            exito = enviar_correo_background(excel_cancelados, nombre_archivo_cancelados)
+                            if exito:
+                                st.success("📬 ¡Correo enviado con éxito! El archivo Excel de cancelaciones ha sido adjuntado de manera automática.")
                 else:
                     st.info("No se han detectado pedidos para cancelar.")
                 
@@ -210,15 +279,11 @@ if stock_file and pedidos_recoger_file and listar_recogida_file:
                     
                     if df_ceco_in is not None and not df_ceco_in.empty:
                         try:
-                            # Localizar columnas de Cecopartners de forma flexible por minúsculas
                             dict_cols_ceco = {col.lower(): col for col in df_ceco_in.columns}
                             col_ceco_ref_d = dict_cols_ceco.get('referencia', df_ceco_in.columns[3] if len(df_ceco_in.columns) > 3 else df_ceco_in.columns[0])
                             col_ceco_pedido = dict_cols_ceco.get('número de pedido de cliente', dict_cols_ceco.get('addressee_order_number', df_ceco_in.columns[-1]))
                             
-                            # Construir el fichero definitivo alineando con la estructura del almacén
                             df_almacen_fr = pd.DataFrame()
-                            
-                            # Claves limpias para cruzar
                             pedidos_ceco_limpios = df_ceco_in[col_ceco_pedido].astype(str).str.strip()
                             
                             df_almacen_fr['P'] = pedidos_ceco_limpios.map(mapa_pedido_a_zona).fillna("")
