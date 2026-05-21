@@ -1,4 +1,44 @@
 import streamlit as st
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+
+def enviar_correo_almacen_francia(excel_data, filename):
+    try:
+        if "email" not in st.secrets:
+            return False
+        smtp_server = st.secrets["email"]["smtp_server"]
+        smtp_port = st.secrets["email"]["smtp_port"]
+        sender_email = st.secrets["email"]["sender_email"]
+        sender_password = st.secrets["email"]["sender_password"]
+        
+        destinatario = "almacenfrancia@cecotec.es"
+        cc_emails = ["juanbrox@cecotec.es", "antoniodiaz@cecotec.es"]
+        
+        msg = MIMEMultipart()
+        msg['From'] = sender_email
+        msg['To'] = destinatario
+        msg['Cc'] = ", ".join(cc_emails)
+        msg['Subject'] = f"Fichero D-PEDIDOS FLEX FR DEFINITIVO"
+        msg.attach(MIMEText("Buenos días,\n\nAdjunto el archivo definitivo D-PEDIDOS de Seller Flex Francia con las referencias D conciliadas para su preparación.\n\nUn saludo.", 'plain'))
+        
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(excel_data)
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+        msg.attach(part)
+        
+        server = smtplib.SMTP(smtp_server, smtp_port)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.sendmail(sender_email, [destinatario] + cc_emails, msg.as_string())
+        server.quit()
+        return True
+    except Exception:
+        return False
+
 import pandas as pd
 import re
 import io
@@ -143,50 +183,6 @@ def enviar_correo_background(excel_data, filename):
         return False
 
 
-def enviar_correo_almacen_francia(excel_data, filename):
-    """Envía el fichero final D-PEDIDOS a Almacén Francia con copias corporativas."""
-    try:
-        if "email" not in st.secrets:
-            st.error("❌ Error: No se ha encontrado la sección [email] en los Secrets de Streamlit.")
-            return False
-            
-        smtp_server = st.secrets["email"]["smtp_server"]
-        smtp_port = st.secrets["email"]["smtp_port"]
-        sender_email = st.secrets["email"]["sender_email"]
-        sender_password = st.secrets["email"]["sender_password"]
-        
-        destinatario = "almacenfrancia@cecotec.es"
-        cc_emails = ["juanbrox@cecotec.es", "antoniodiaz@cecotec.es"]
-        
-        fecha_hoy = datetime.now().strftime("%d/%m/%Y")
-        asunto = f"Fichero D-PEDIDOS FLEX FR DEFINITIVO - {fecha_hoy}"
-        cuerpo_mensaje = "Buenos días,\n\nAdjunto el archivo definitivo D-PEDIDOS de Seller Flex Francia con las referencias D conciliadas para su preparación.\n\nUn saludo."
-        
-        msg = MIMEMultipart()
-        msg['From'] = sender_email
-        msg['To'] = destinatario
-        msg['Cc'] = ", ".join(cc_emails)
-        msg['Subject'] = asunto
-        msg.attach(MIMEText(cuerpo_mensaje, 'plain'))
-        
-        part = MIMEBase('application', 'octet-stream')
-        part.set_payload(excel_data)
-        encoders.encode_base64(part)
-        part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-        msg.attach(part)
-        
-        todos_los_destinatarios = [destinatario] + cc_emails
-        
-        server = smtplib.SMTP(smtp_server, smtp_port)
-        server.starttls()
-        server.login(sender_email, sender_password)
-        server.sendmail(sender_email, todos_los_destinatarios, msg.as_string())
-        server.quit()
-        return True
-    except Exception as e:
-        st.error(f"❌ Error al enviar el correo al almacén: {e}")
-        return False
-
 # Verificar que los 2 ficheros manuales requeridos han sido subidos
 if pedidos_recoger_file and listar_recogida_file:
     
@@ -215,9 +211,10 @@ if pedidos_recoger_file and listar_recogida_file:
             
             def parse_listar_recogida(text):
                 text = str(text).strip()
-                n_pedido = text.split()[0] if len(text.split()) > 0 else ""
-                match = re.search(r'(?:ID de envío:|ID de envio:)\s*([A-Za-z0-9]+)', text)
-                id_envio = match.group(1) if match else ""
+                partes = text.split()
+                n_pedido = partes[0] if len(partes) > 0 else ""
+                # Separación fija: la U (Shipment ID) siempre son los últimos 9 caracteres
+                id_envio = text[-9:].strip() if len(text) >= 9 else ""
                 return pd.Series([n_pedido, id_envio])
 
             df_listar_recogida[['Num_Pedido_LR', 'Id_Envio_LR']] = df_listar_recogida[col_listar_a].apply(parse_listar_recogida)
@@ -228,7 +225,7 @@ if pedidos_recoger_file and listar_recogida_file:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # Mapeos auxiliares para la pestaña de almacén guardados en session_state para evitar pérdidas en re-runs
+            # Mapeos auxiliares para la pestaña de almacén en session_state (Cruce bidireccional por Nº pedido y por Shipment ID)
             mapa_p = {}
             mapa_u = {}
             for _, r in df_pedidos_recoger.iterrows():
@@ -236,10 +233,10 @@ if pedidos_recoger_file and listar_recogida_file:
                 ident = str(r.get('Identificador de pedido', '')).strip()
                 zona_val = str(r.get('Zona', '')).strip()
                 
-                if ped_f and ped_f != "nan":
+                if ped_f and ped_f != "nan" and ped_f != "":
                     mapa_p[ped_f] = zona_val
                     mapa_u[ped_f] = ident
-                if ident and ident != "nan":
+                if ident and ident != "nan" and ident != "":
                     mapa_p[ident] = zona_val
                     mapa_u[ident] = ident
             
@@ -395,6 +392,8 @@ if pedidos_recoger_file and listar_recogida_file:
                                     exito_envio = enviar_correo_almacen_francia(excel_definitivo, "D-PEDIDOS_FLEX_FR_DEFINITIVO.xlsx")
                                     if exito_envio:
                                         st.success("📬 ¡Correo enviado con éxito al Almacén de Francia! Los destinatarios asignados han sido incluidos en copia.")
+                                    else:
+                                        st.error("❌ No se pudo enviar el correo. Revisa la configuración SMTP.")
                         except Exception as ex_cruce:
                             st.error(f"Error procesando el fichero devuelto de Cecopartners: {ex_cruce}")
                     else:
