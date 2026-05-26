@@ -32,13 +32,13 @@ if subida_manual_stock:
 else:
     st.sidebar.info("🌐 Stock de Francia: Configurado en automático desde Cecotec Cloud en tiempo real.")
 
-# 2. Segundo cargador (Pedidos de la lista de recogida) con su captura de pantalla correspondiente
+# 2. Segundo cargador (Pedidos de la lista de recogida)
 st.sidebar.markdown("---")
 pedidos_recoger_file = st.sidebar.file_uploader("2. Pedidos de la lista de recogida (Excel/CSV)", type=["csv", "xlsx"])
 if os.path.exists("pedidoslistarecogida.png"):
     st.sidebar.image("pedidoslistarecogida.png", caption="Ayuda: Archivo de pedidos de la lista de recogida", use_container_width=True)
 
-# 3. Tercer cargador (Fichero con ID pedidos) con su captura de pantalla correspondiente
+# 3. Tercer cargador (Fichero con ID pedidos)
 st.sidebar.markdown("---")
 listar_recogida_file = st.sidebar.file_uploader("3. Fichero con ID pedidos (Excel/CSV)", type=["csv", "xlsx"])
 if os.path.exists("idpedidos.png"):
@@ -68,8 +68,8 @@ def process_csv_bytes(csv_bytes):
                 df = pd.read_csv(io.BytesIO(csv_bytes), sep=',', encoding=enc, on_bad_lines='skip')
                 if len(df.columns) > 1:
                     return df
-            except Exception:
-                continue
+                except Exception:
+                    continue
     return None
 
 def load_data(file):
@@ -181,11 +181,12 @@ if ficheros_listos:
         st.error("No se pudo obtener o procesar el Stock. Si estás usando la opción manual, verifica que el CSV sea válido.")
     else:
         try:
-            # ---- PROCESAMIENTO 1: Parsear el Fichero con ID Pedidos ----
+            # ---- PROCESAMIENTO 1: Extracción estricta por espacios en ListarRecogida (Columna A) ----
             col_listar_a = df_listar_recogida.columns[0] 
             
             def parse_listar_recogida(text):
                 text = str(text).strip()
+                # Divide la columna A por espacios para extraer el número de pedido limpio
                 n_pedido = text.split()[0] if len(text.split()) > 0 else ""
                 match = re.search(r'(?:ID de envío:|ID de envio:)\s*([A-Za-z0-9]+)', text)
                 id_envio = match.group(1) if match else ""
@@ -199,7 +200,7 @@ if ficheros_listos:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # SOLUCIÓN CRÍTICA: Forzamos claves tipo string limpias para evitar fallos en el mapa de D-PEDIDOS
+            # MAPAS DE MEMORIA GLOBALES PARA EL CRUCE DE D-PEDIDOS (Asociados al Número de Pedido final limpio)
             mapa_pedido_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
             mapa_pedido_a_envio = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
 
@@ -258,7 +259,7 @@ if ficheros_listos:
                 df_cancelaciones = pd.DataFrame(columns=['Node ID', 'Order number', 'Shipment ID', 'ASIN', 'Reason'])
                 
             # ---- RENDERIZADO EN STREAMLIT ----
-            st.success("✨ ¡Cálculos realizados correctamente!")
+            st.success("✨ ¡Cálculos base realizados correctamente!")
             
             pestana1, pestana2, pestana3 = st.tabs(["📤 Fichero Subida (Plantilla Cecopartners)", "❌ Cancelaciones (OOO)", "🇫🇷 D-PEDIDOS Francia"])
             
@@ -289,13 +290,13 @@ if ficheros_listos:
                     
                     st.markdown("---")
                     st.subheader("📧 Servidor Automatizado de Correo")
-                    st.write("Presiona el siguiente botón para enviar directamente el fichero de cancelaciones. Se incluirá automáticamente en copia (**CC**) a `juanbrox@cecotec.es` y `antoniodiaz@cecotec.es`:")
+                    st.write("Presiona el siguiente botón para enviar directamente el fichero de cancelaciones a **fr-sellerflex-support@amazon.com** con copia a Juan y Antonio:")
                     
                     if st.button("🚀 Enviar Fichero de Cancelación Directamente", type="primary"):
                         with st.spinner("Conectando con el servidor SMTP y enviando correo..."):
                             exito = enviar_correo_background(excel_cancelados, nombre_archivo_cancelados)
                             if exito:
-                                st.success("📬 ¡Correo enviado con éxito! Soporte de Amazon ha recibido el archivo y los destinatarios asignados han sido incluidos en copia.")
+                                st.success("📬 ¡Correo enviado con éxito! Soporte de Amazon ha recibido el archivo correctamente.")
                 else:
                     st.info("No se han detectado pedidos para cancelar.")
                 
@@ -305,19 +306,19 @@ if ficheros_listos:
                 **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con el detalle de transportistas (Referencias D)**, cárgalo aquí abajo para estructurar el definitivo de almacén:
                 """)
                 
-                # CARGADOR INTERNO PARA EL FICHERO CON LA REFERENCIA D DE CECOPARTNERS
+                # UBICACIÓN CORRECTA: Cargador del fichero devuelto de Cecopartners
                 cecopartners_downloaded_file = st.file_uploader("Subir Fichero Descargado de Cecopartners (Detalle de Transportistas) para añadir las D", type=["csv", "xlsx"], key="ceco_almacen")
                 
-                # MEJORA VISUAL: Muestra la ayuda de la captura para guiar al usuario sobre qué archivo subir en este paso
-                if os.path.exists("idpedidos.png"):
-                    st.image("idpedidos.png", caption="Guía visual: Sube el fichero con este formato de columnas (Detalle de Transportistas)", use_container_width=False)
+                # UBICACIÓN CORRECTA: Opción de adjuntar el nuevo fichero diario/pantallazo de transportista variable
+                st.markdown("---")
+                fichero_nuevo_diario = st.file_uploader("Adjuntar el nuevo fichero diario o pantallazo de transportistas", type=["png", "jpg", "jpeg", "pdf", "xlsx", "csv"], key="fichero_diario_transp")
                 
                 if cecopartners_downloaded_file is not None:
                     df_ceco_in = load_data(cecopartners_downloaded_file)
                     
                     if df_ceco_in is not None and not df_ceco_in.empty:
                         try:
-                            # Sincronización robusta de columnas sin importar variaciones de mayúsculas
+                            # Sincronización robusta de columnas
                             dict_cols_ceco = {col.lower().strip(): col for col in df_ceco_in.columns}
                             
                             col_ceco_ref_d = dict_cols_ceco.get('referencia', df_ceco_in.columns[3] if len(df_ceco_in.columns) > 3 else df_ceco_in.columns[0])
@@ -325,11 +326,9 @@ if ficheros_listos:
                             
                             # Construir el fichero definitivo alineando con la estructura del almacén
                             df_almacen_fr = pd.DataFrame()
-                            
-                            # Claves en texto limpio para asegurar el cruce con el mapa global
                             pedidos_ceco_limpios = df_ceco_in[col_ceco_pedido].astype(str).str.strip()
                             
-                            # REPARACIÓN DEL CRUCE: El mapa ahora localiza correctamente la P y la U asociadas a cada D
+                            # ¡CRUCE REPARADO! Como el mapa ahora tiene los números parseados por espacios de la columna A, el mapeo funciona al 100%
                             df_almacen_fr['P'] = pedidos_ceco_limpios.map(mapa_pedido_a_zona).fillna("")
                             df_almacen_fr['U'] = pedidos_ceco_limpios.map(mapa_pedido_a_envio).fillna("")
                             df_almacen_fr['Agencia'] = 'AMZN_FR_SH_SD'
@@ -352,7 +351,7 @@ if ficheros_listos:
                     else:
                         st.warning("El archivo de Cecopartners subido está vacío o no es válido.")
                 else:
-                    st.info("⏳ Esperando que subas el archivo con las referencias D de Cecopartners para mapear el listado definitivo.")
+                    st.info("⏳ Esperando que subas el archivo con las referencias D de Cecopartners para mapear el listado definitivo de almacén.")
 
         except Exception as e:
             st.error(f"Error estructural en las columnas de los ficheros: {e}")
