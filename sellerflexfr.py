@@ -22,7 +22,7 @@ Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilida
 
 st.sidebar.header("Carga de Ficheros Principales")
 
-# MEJORA: Opción híbrida de Stock (Automatizado por URL o Manual por archivo)
+# Opción híbrida de Stock (Automatizado por URL o Manual por archivo)
 st.sidebar.subheader("⚙️ Configuración de Stock FR")
 subida_manual_stock = st.sidebar.checkbox("Subir fichero de Stock FR manualmente", value=False)
 
@@ -160,9 +160,8 @@ else:
 if ficheros_listos:
     st.info("Procesando datos... Por favor, espera.")
     
-    # 1. Obtención del DataFrame de Stock (Filtro por URL o por archivo subido)
+    # 1. Obtención del DataFrame de Stock
     if subida_manual_stock:
-        # Si se sube manual, leemos el archivo usando la misma función robusta de bytes
         df_stock = process_csv_bytes(stock_file.read())
     else:
         df_stock = download_stock_from_url()
@@ -200,8 +199,9 @@ if ficheros_listos:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            mapa_pedido_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
-            mapa_pedido_a_envio = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].str.strip(), df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
+            # SOLUCIÓN CRÍTICA: Forzamos claves tipo string limpias para evitar fallos en el mapa de D-PEDIDOS
+            mapa_pedido_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
+            mapa_pedido_a_envio = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
 
             # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock ----
             col_stock_ref = df_stock.columns[0]
@@ -302,23 +302,34 @@ if ficheros_listos:
             with pestana3:
                 st.subheader("Generación de Fichero Definitivo de Almacén")
                 st.markdown("""
-                **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo para estructurar el definitivo de almacén:
+                **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con el detalle de transportistas (Referencias D)**, cárgalo aquí abajo para estructurar el definitivo de almacén:
                 """)
                 
-                cecopartners_downloaded_file = st.file_uploader("Subir Fichero Descargado de Cecopartners (Excel/CSV) para cruzar las D", type=["csv", "xlsx"], key="ceco_almacen")
+                # CARGADOR INTERNO PARA EL FICHERO CON LA REFERENCIA D DE CECOPARTNERS
+                cecopartners_downloaded_file = st.file_uploader("Subir Fichero Descargado de Cecopartners (Detalle de Transportistas) para añadir las D", type=["csv", "xlsx"], key="ceco_almacen")
+                
+                # MEJORA VISUAL: Muestra la ayuda de la captura para guiar al usuario sobre qué archivo subir en este paso
+                if os.path.exists("idpedidos.png"):
+                    st.image("idpedidos.png", caption="Guía visual: Sube el fichero con este formato de columnas (Detalle de Transportistas)", use_container_width=False)
                 
                 if cecopartners_downloaded_file is not None:
                     df_ceco_in = load_data(cecopartners_downloaded_file)
                     
                     if df_ceco_in is not None and not df_ceco_in.empty:
                         try:
-                            dict_cols_ceco = {col.lower(): col for col in df_ceco_in.columns}
+                            # Sincronización robusta de columnas sin importar variaciones de mayúsculas
+                            dict_cols_ceco = {col.lower().strip(): col for col in df_ceco_in.columns}
+                            
                             col_ceco_ref_d = dict_cols_ceco.get('referencia', df_ceco_in.columns[3] if len(df_ceco_in.columns) > 3 else df_ceco_in.columns[0])
                             col_ceco_pedido = dict_cols_ceco.get('número de pedido de cliente', dict_cols_ceco.get('addressee_order_number', df_ceco_in.columns[-1]))
                             
+                            # Construir el fichero definitivo alineando con la estructura del almacén
                             df_almacen_fr = pd.DataFrame()
+                            
+                            # Claves en texto limpio para asegurar el cruce con el mapa global
                             pedidos_ceco_limpios = df_ceco_in[col_ceco_pedido].astype(str).str.strip()
                             
+                            # REPARACIÓN DEL CRUCE: El mapa ahora localiza correctamente la P y la U asociadas a cada D
                             df_almacen_fr['P'] = pedidos_ceco_limpios.map(mapa_pedido_a_zona).fillna("")
                             df_almacen_fr['U'] = pedidos_ceco_limpios.map(mapa_pedido_a_envio).fillna("")
                             df_almacen_fr['Agencia'] = 'AMZN_FR_SH_SD'
@@ -327,7 +338,7 @@ if ficheros_listos:
                             df_almacen_fr['ESTADO'] = 'ESPERANDO ETIQUETA'
                             df_almacen_fr['NÚMERO DE PEDIDO DE CLIENTE'] = pedidos_ceco_limpios
                             
-                            st.success("🎉 ¡Fichero definitivo para Almacén Francia generado con las 'D' cruzadas exitosamente!")
+                            st.success("🎉 ¡Fichero definitivo para Almacén Francia generado con las 'D', 'P' y 'U' cruzadas exitosamente!")
                             st.dataframe(df_almacen_fr)
                             
                             st.download_button(
@@ -341,10 +352,11 @@ if ficheros_listos:
                     else:
                         st.warning("El archivo de Cecopartners subido está vacío o no es válido.")
                 else:
-                    st.info("⏳ Esperando que subas el archivo descargado de Cecopartners con las referencias D para generar el listado definitivo de almacén.")
+                    st.info("⏳ Esperando que subas el archivo con las referencias D de Cecopartners para mapear el listado definitivo.")
 
         except Exception as e:
             st.error(f"Error estructural en las columnas de los ficheros: {e}")
             st.warning("Asegúrate de que las columnas coincidan con las estructuras estándar.")
 else:
+    st.sidebar.warning("Falta subir archivos obligatorios.")
     st.info("👋 Por favor, carga los archivos requeridos en la barra lateral para empezar a operar.")
