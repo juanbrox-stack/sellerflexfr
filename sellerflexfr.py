@@ -199,7 +199,7 @@ if ficheros_listos:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # MAPAS DE MEMORIA CORREGIDOS (Con llaves purificadas en string para evitar fallos de cruce)
+            # MAPAS GLOBALES DE CRUCE (Asociados al Número de Pedido de Amazon extraído por espacios)
             mapa_pedido_largo_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
             mapa_pedido_largo_a_envio = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
 
@@ -219,7 +219,7 @@ if ficheros_listos:
             mapa_referencias_stock = dict(zip(df_stock[col_stock_ref], df_stock[col_stock_cant]))
             df_pedidos_recoger['Stock_Actual'] = df_pedidos_recoger['SKU_Limpio'].map(mapa_referencias_stock).fillna(0)
             
-            # Regla de corte: stock > 2 disponible. Si es <= 2, se va a cancelaciones.
+            # Filtrado por stock mínimo <= 2
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['Stock_Actual'] > 2
             
             # ---- FILTRADO Y DIVISIÓN ----
@@ -326,38 +326,39 @@ if ficheros_listos:
                     
                     if df_ceco_in is not None and not df_ceco_in.empty:
                         try:
-                            # HACEMOS UNA COPIA EXACTA PARA NO MODIFICAR NI DESTRUIR EL ARCHIVO DE CECOPARTNERS
+                            # HACEMOS UNA COPIA EXACTA PARA NO DESTRUIR NINGUNA COLUMNA NATIVA
                             df_almacen_fr = df_ceco_in.copy()
                             
-                            # Identificamos de manera flexible la columna del número de pedido de cliente
+                            # CORRECCIÓN DE LA CLAVE: Buscamos de forma flexible la columna 'NÚMERO ERP' para hacer el cruce directo
                             dict_cols_ceco = {col.lower().strip(): col for col in df_almacen_fr.columns}
-                            col_ceco_pedido = dict_cols_ceco.get('addressee_order_number', dict_cols_ceco.get('número de pedido de cliente', None))
+                            col_ceco_pedido = dict_cols_ceco.get('número erp', dict_cols_ceco.get('addressee_order_number', dict_cols_ceco.get('número de pedido de cliente', None)))
+                            
                             if not col_ceco_pedido:
                                 for c in df_almacen_fr.columns:
-                                    if any(x in c.lower() for x in ['pedido', 'number', 'addressee']):
+                                    if any(x in c.lower() for x in ['erp', 'pedido', 'number', 'addressee']):
                                         col_ceco_pedido = c
                                         break
                             if not col_ceco_pedido:
                                 col_ceco_pedido = df_almacen_fr.columns[-1]
                             
-                            # Claves en texto purificado para el cruce
+                            # Tratamos los códigos como Texto Purificado para evitar problemas de tipos
                             pedidos_ceco_limpios = df_almacen_fr[col_ceco_pedido].astype(str).str.strip()
                             
-                            # SOLUCIÓN ANTES DE LA MODIFICACIÓN: Modificamos e inyectamos ÚNICAMENTE P, U y Agencia sobre el archivo base
+                            # CRUCE PERFECTO: Añadimos P y U sobre el archivo original e inyectamos la agencia final
                             df_almacen_fr['P'] = pedidos_ceco_limpios.map(mapa_pedido_largo_a_zona).fillna("")
                             df_almacen_fr['U'] = pedidos_ceco_limpios.map(mapa_pedido_largo_a_envio).fillna("")
                             df_almacen_fr['Agencia'] = 'AMZN_FR_SH_SD'
                             
-                            # BORRADO DE COLUMNAS BASURA: Si existen columnas llamadas 'FALSE' o 'Disponible', las eliminamos limpiamente
+                            # BORRADO DE COLUMNAS BASURA (Elimina automáticamente 'FALSE' o 'Disponible' si aparecen)
                             columnas_a_borrar = [c for c in df_almacen_fr.columns if str(c).upper() in ['FALSE', 'DISPONIBLE']]
                             if columnas_a_borrar:
                                 df_almacen_fr.drop(columns=columnas_a_borrar, inplace=True)
                             
-                            # Reordenamos para que las columnas principales queden visibles en las primeras posiciones como antes
+                            # REORDENACIÓN HISTÓRICA: Coloca las columnas calculadas en las primeras posiciones
                             cols_ordenadas = ['P', 'U', 'Agencia'] + [c for c in df_almacen_fr.columns if c not in ['P', 'U', 'Agencia']]
                             df_almacen_fr = df_almacen_fr[cols_ordenadas]
                             
-                            st.success("🎉 ¡Fichero de Cecopartners actualizado correctamente con las columnas P, U y la Agencia sin alterar sus datos!")
+                            st.success("🎉 ¡Fichero de Cecopartners actualizado correctamente! Datos de las columnas P y U cruzados a través del NÚMERO ERP.")
                             st.dataframe(df_almacen_fr)
                             
                             st.download_button(
