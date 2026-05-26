@@ -104,7 +104,7 @@ def to_excel(df):
 
 
 def enviar_correo_background(excel_data, filename, extra_file=None):
-    """Envía el correo desde el servidor SMTP incluyendo destinatarios en CC y el segundo archivo adjunto diario."""
+    """Envía el correo desde el servidor SMTP incluyendo destinatarios en CC y el segundo archivo opcional."""
     try:
         if "email" not in st.secrets:
             st.error("❌ Error: No se ha encontrado la sección [email] en los Secrets de Streamlit.")
@@ -129,14 +129,14 @@ def enviar_correo_background(excel_data, filename, extra_file=None):
         msg['Subject'] = asunto
         msg.attach(MIMEText(cuerpo_mensaje, 'plain'))
         
-        # Adjunto 1: Excel de cancelaciones calculadas
+        # Adjunto 1: Fichero de cancelaciones
         part1 = MIMEBase('application', 'octet-stream')
         part1.set_payload(excel_data)
         encoders.encode_base64(part1)
         part1.add_header('Content-Disposition', f'attachment; filename="{filename}"')
         msg.attach(part1)
         
-        # Adjunto 2: El pantallazo/fichero diario variable de transportistas que subes en la pestaña 3
+        # Adjunto 2: El pantallazo/fichero diario de transportistas
         if extra_file is not None:
             part2 = MIMEBase('application', 'octet-stream')
             part2.set_payload(extra_file.read())
@@ -190,7 +190,7 @@ if ficheros_listos:
         st.error("No se pudo obtener o procesar el Stock. Si estás usando la opción manual, verifica que el CSV sea válido.")
     else:
         try:
-            # ---- PROCESAMIENTO 1: Separar la columna A de ListarRecogida usando espacios ----
+            # ---- PROCESAMIENTO 1: Extracción por espacios en ListarRecogida (Columna A) ----
             col_listar_a = df_listar_recogida.columns[0] 
             
             def parse_listar_recogida(text):
@@ -208,7 +208,7 @@ if ficheros_listos:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # MAPAS DE MEMORIA GLOBALES INDEXADOS POR EL NÚMERO DE PEDIDO LARGO (Clave común con Cecopartners)
+            # NORMALIZACIÓN ABSOLUTA: Guardamos los mapas asegurando claves tipo Texto Limpio
             mapa_pedido_largo_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
             mapa_pedido_largo_a_envio = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
 
@@ -251,7 +251,7 @@ if ficheros_listos:
                 df_subida_plantilla['city'] = 'MASSALAVÉS'
                 df_subida_plantilla['country_code'] = 'ES'
                 df_subida_plantilla['comment'] = 0
-                df_subida_plantilla['addressee_order_number'] = df_ok['Número_Pedido_Final']
+                df_subida_plantilla['addressee_order_number'] = df_ok['Número_Pedido_Final'].astype(str).str.strip()
                 df_subida_plantilla['customer_mail'] = df_subida_plantilla['addressee_order_number'].astype(str) + '@sellerflexfr.com'
             
             # 2. FICHERO DE CANCELACIONES
@@ -298,54 +298,47 @@ if ficheros_listos:
                     
                     st.markdown("---")
                     st.subheader("📧 Servidor Automatizado de Correo")
-                    st.write("Presiona el siguiente botón para enviar directamente el fichero de cancelaciones a **fr-sellerflex-support@amazon.com** con copia a Juan y Antonio:")
+                    st.write("Presiona el siguiente botón para enviar el fichero de cancelaciones a **fr-sellerflex-support@amazon.com**:")
                     
                     if st.button("🚀 Enviar Fichero de Cancelación Directamente", type="primary"):
                         with st.spinner("Conectando con el servidor SMTP y enviando correo..."):
-                            exito = enviar_correo_background(excel_cancelados, nombre_archivo_cancelados, None)
+                            exito = enviar_correo_background(excel_cancelados, nombre_archivo_cancelados)
                             if exito:
-                                st.success("📬 ¡Correo enviado con éxito! El soporte de Amazon ha recibido el fichero.")
+                                st.success("📬 ¡Correo enviado con éxito!")
                 else:
                     st.info("No se han detectado pedidos para cancelar.")
                 
             with pestana3:
                 st.subheader("Generación de Fichero Definitivo de Almacén")
                 st.markdown("""
-                **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo para estructurar el definitivo de almacén:
+                **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo:
                 """)
                 
-                # Cargador del fichero devuelto de Cecopartners con las D
                 cecopartners_downloaded_file = st.file_uploader("Subir Fichero Descargado de Cecopartners (Detalle de Transportistas) para añadir las D", type=["csv", "xlsx"], key="ceco_almacen")
                 
                 # Cargador del pantallazo/fichero diario variable solicitado por el usuario
                 st.markdown("---")
                 fichero_nuevo_diario = st.file_uploader("Adjuntar el nuevo fichero diario o pantallazo de transportistas", type=["png", "jpg", "jpeg", "pdf", "xlsx", "csv"], key="fichero_diario_transp")
                 
-                # Botón integrado para enviar el correo incluyendo el pantallazo diario si el usuario lo necesita
                 if fichero_nuevo_diario is not None:
-                    st.info(f"📂 Archivo diario cargado listo para ser enviado: **{fichero_nuevo_diario.name}**")
+                    st.info(f"📂 Archivo diario listo: **{fichero_nuevo_diario.name}**")
                     if st.button("📧 Enviar Correo con Pantallazo Diario adjunto", key="send_extra_mail"):
                         with st.spinner("Enviando correo con el archivo diario adjunto..."):
-                            # Si hay cancelaciones acumuladas las mandamos, si no mandamos un buffer vacío junto con el pantallazo
                             excel_to_send = to_excel(df_cancelaciones) if not df_cancelaciones.empty else to_excel(pd.DataFrame([{"Info": "No cancel orders today"}]))
                             exito_mail = enviar_correo_background(excel_to_send, "CancelOrders.xlsx", fichero_nuevo_diario)
                             if exito_mail:
-                                st.success("📬 ¡Correo con el Pantallazo Diario enviado con éxito a soporte!")
+                                st.success("📬 ¡Correo enviado con éxito!")
 
                 if cecopartners_downloaded_file is not None:
                     df_ceco_in = load_data(cecopartners_downloaded_file)
                     
                     if df_ceco_in is not None and not df_ceco_in.empty:
                         try:
-                            # Sincronización robusta de columnas sin importar mayúsculas
                             dict_cols_ceco = {col.lower().strip(): col for col in df_ceco_in.columns}
-                            
                             col_ceco_ref_d = dict_cols_ceco.get('referencia', df_ceco_in.columns[3] if len(df_ceco_in.columns) > 3 else df_ceco_in.columns[0])
                             
-                            # Identificamos la columna del número de pedido (ej: addressee_order_number o número de pedido de cliente)
                             col_ceco_pedido = dict_cols_ceco.get('addressee_order_number', dict_cols_ceco.get('número de pedido de cliente', None))
                             if not col_ceco_pedido:
-                                # Fallback dinámico si no encuentra los nombres estándar
                                 for c in df_ceco_in.columns:
                                     if any(x in c.lower() for x in ['pedido', 'number', 'addressee']):
                                         col_ceco_pedido = c
@@ -353,11 +346,12 @@ if ficheros_listos:
                             if not col_ceco_pedido:
                                 col_ceco_pedido = df_ceco_in.columns[-1]
                             
-                            # Construir el fichero definitivo alineando con la estructura del almacén
                             df_almacen_fr = pd.DataFrame()
+                            
+                            # BLINDAJE CRÍTICO DE TIPOS DE DATOS: Forzamos que la columna de Cecopartners sea tratada estrictamente como Texto Limpio
                             pedidos_ceco_limpios = df_ceco_in[col_ceco_pedido].astype(str).str.strip()
                             
-                            # ¡Mapeo Corregido e Infalible! Cruzamos por el número de pedido largo de Amazon
+                            # Ahora que ambos lados son texto limpio, el mapeo de P y U saldrá perfecto y alineado
                             df_almacen_fr['P'] = pedidos_ceco_limpios.map(mapa_pedido_largo_a_zona).fillna("")
                             df_almacen_fr['U'] = pedidos_ceco_limpios.map(mapa_pedido_largo_a_envio).fillna("")
                             df_almacen_fr['Agencia'] = 'AMZN_FR_SH_SD'
@@ -366,7 +360,7 @@ if ficheros_listos:
                             df_almacen_fr['ESTADO'] = 'ESPERANDO ETIQUETA'
                             df_almacen_fr['NÚMERO DE PEDIDO DE CLIENTE'] = pedidos_ceco_limpios
                             
-                            st.success("🎉 ¡Fichero definitivo para Almacén Francia generado con las 'D', 'P' y 'U' cruzadas exitosamente!")
+                            st.success("🎉 ¡Fichero definitivo para Almacén Francia generado con éxito!")
                             st.dataframe(df_almacen_fr)
                             
                             st.download_button(
@@ -378,9 +372,9 @@ if ficheros_listos:
                         except Exception as ex_cruce:
                             st.error(f"Error procesando el fichero devuelto de Cecopartners: {ex_cruce}")
                     else:
-                        st.warning("El archivo de Cecopartners subido está vacío o no es válido.")
+                        st.warning("El archivo de Cecopartners subido está vacío.")
                 else:
-                    st.info("⏳ Esperando que subas el archivo con las referencias D de Cecopartners para mapear el listado definitivo de almacén.")
+                    st.info("⏳ Esperando el archivo con las referencias D de Cecopartners.")
 
         except Exception as e:
             st.error(f"Error estructural en las columnas de los ficheros: {e}")
