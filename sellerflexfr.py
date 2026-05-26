@@ -68,8 +68,8 @@ def process_csv_bytes(csv_bytes):
                 df = pd.read_csv(io.BytesIO(csv_bytes), sep=',', encoding=enc, on_bad_lines='skip')
                 if len(df.columns) > 1:
                     return df
-                except Exception:
-                    continue
+            except Exception:
+                continue
     return None
 
 def load_data(file):
@@ -186,23 +186,25 @@ if ficheros_listos:
             
             def parse_listar_recogida(text):
                 text = str(text).strip()
-                # Divide la columna A por espacios para extraer el número de pedido limpio
                 n_pedido = text.split()[0] if len(text.split()) > 0 else ""
                 match = re.search(r'(?:ID de envío:|ID de envio:)\s*([A-Za-z0-9]+)', text)
                 id_envio = match.group(1) if match else ""
                 return pd.Series([n_pedido, id_envio])
 
             df_listar_recogida[['Num_Pedido_LR', 'Id_Envio_LR']] = df_listar_recogida[col_listar_a].apply(parse_listar_recogida)
-            mapa_envio_pedido = dict(zip(df_listar_recogida['Id_Envio_LR'].str.strip(), df_listar_recogida['Num_Pedido_LR'].str.strip()))
+            
+            # Mapas limpios indexados por el Identificador de Envío (T...)
+            mapa_envio_a_pedido = dict(zip(df_listar_recogida['Id_Envio_LR'].str.strip(), df_listar_recogida['Num_Pedido_LR'].str.strip()))
 
             # ---- PROCESAMIENTO 2: Limpieza y Mapeo en Pedidos de Lista de Recogida ----
             df_pedidos_recoger['SKU_Limpio'] = df_pedidos_recoger['SKU'].apply(clean_sku)
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # MAPAS DE MEMORIA GLOBALES PARA EL CRUCE DE D-PEDIDOS (Asociados al Número de Pedido final limpio)
-            mapa_pedido_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
-            mapa_pedido_a_envio = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
+            # MAPAS DE MEMORIA DEFINITIVOS PARA EL CRUCE DE LA PESTAÑA 3
+            mapa_envio_a_zona = dict(zip(df_pedidos_recoger['Identificador_Clean'], df_pedidos_recoger['Zona'].astype(str).str.strip()))
+            mapa_pedido_corto_a_envio = dict(zip(df_pedidos_recoger['Número_Pedido_Final'], df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
+            mapa_pedido_corto_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'], df_pedidos_recoger['Zona'].astype(str).str.strip()))
 
             # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock ----
             col_stock_ref = df_stock.columns[0]
@@ -220,7 +222,7 @@ if ficheros_listos:
             mapa_referencias_stock = dict(zip(df_stock[col_stock_ref], df_stock[col_stock_cant]))
             df_pedidos_recoger['Stock_Actual'] = df_pedidos_recoger['SKU_Limpio'].map(mapa_referencias_stock).fillna(0)
             
-            # Regla de corte: stock > 2 disponible. Si es <= 2, se va a cancelaciones.
+            # Filtro de stock mínimo <= 2
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['Stock_Actual'] > 2
             
             # ---- FILTRADO Y DIVISIÓN ----
@@ -303,13 +305,13 @@ if ficheros_listos:
             with pestana3:
                 st.subheader("Generación de Fichero Definitivo de Almacén")
                 st.markdown("""
-                **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con el detalle de transportistas (Referencias D)**, cárgalo aquí abajo para estructurar el definitivo de almacén:
+                **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo para estructurar el definitivo de almacén:
                 """)
                 
-                # UBICACIÓN CORRECTA: Cargador del fichero devuelto de Cecopartners
+                # UBICACIÓN PERFECTA: Cargador del fichero devuelto de Cecopartners con la D
                 cecopartners_downloaded_file = st.file_uploader("Subir Fichero Descargado de Cecopartners (Detalle de Transportistas) para añadir las D", type=["csv", "xlsx"], key="ceco_almacen")
                 
-                # UBICACIÓN CORRECTA: Opción de adjuntar el nuevo fichero diario/pantallazo de transportista variable
+                # UBICACIÓN PERFECTA: Cargador del pantallazo variable que generas cada día
                 st.markdown("---")
                 fichero_nuevo_diario = st.file_uploader("Adjuntar el nuevo fichero diario o pantallazo de transportistas", type=["png", "jpg", "jpeg", "pdf", "xlsx", "csv"], key="fichero_diario_transp")
                 
@@ -318,19 +320,23 @@ if ficheros_listos:
                     
                     if df_ceco_in is not None and not df_ceco_in.empty:
                         try:
-                            # Sincronización robusta de columnas
+                            # Localización flexible de columnas limpias de Cecopartners
                             dict_cols_ceco = {col.lower().strip(): col for col in df_ceco_in.columns}
                             
                             col_ceco_ref_d = dict_cols_ceco.get('referencia', df_ceco_in.columns[3] if len(df_ceco_in.columns) > 3 else df_ceco_in.columns[0])
-                            col_ceco_pedido = dict_cols_ceco.get('número de pedido de cliente', dict_cols_ceco.get('addressee_order_number', df_ceco_in.columns[-1]))
+                            
+                            # Identificamos el ID de pedido de Cecopartners (puede llamarse 'addressee_order_number' o 'número de pedido de cliente')
+                            col_ceco_pedido = dict_cols_ceco.get('número de pedido de cliente', dict_cols_ceco.get('addressee_order_number', None))
+                            if not col_ceco_pedido:
+                                col_ceco_pedido = df_ceco_in.columns[-1] # Fallback a la última si no coincide
                             
                             # Construir el fichero definitivo alineando con la estructura del almacén
                             df_almacen_fr = pd.DataFrame()
                             pedidos_ceco_limpios = df_ceco_in[col_ceco_pedido].astype(str).str.strip()
                             
-                            # ¡CRUCE REPARADO! Como el mapa ahora tiene los números parseados por espacios de la columna A, el mapeo funciona al 100%
-                            df_almacen_fr['P'] = pedidos_ceco_limpios.map(mapa_pedido_a_zona).fillna("")
-                            df_almacen_fr['U'] = pedidos_ceco_limpios.map(mapa_pedido_a_envio).fillna("")
+                            # ¡CRUCE REPARADO! Mapeamos usando el identificador corto de pedido limpio sin fallos posicionales
+                            df_almacen_fr['P'] = pedidos_ceco_limpios.map(mapa_pedido_corto_a_zona).fillna("")
+                            df_almacen_fr['U'] = pedidos_ceco_limpios.map(mapa_pedido_corto_a_envio).fillna("")
                             df_almacen_fr['Agencia'] = 'AMZN_FR_SH_SD'
                             df_almacen_fr['REFERENCIA'] = df_ceco_in[col_ceco_ref_d].astype(str).str.strip()
                             df_almacen_fr['NOMBRE DEL CLIENTE'] = 'AMAZON FLEX'
