@@ -119,7 +119,6 @@ def enviar_correo_background(excel_data, filename, destinatario, extra_file=None
         
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
         
-        # NUEVA MEJORA: Cambio de estructura de asunto según el destinatario asignado
         if "support" in destinatario:
             asunto = f"Cancel orders {fecha_hoy}"
             cuerpo_mensaje = "Good morning,\n\nI attach one order to cancel.\n\nBest regards."
@@ -216,15 +215,16 @@ if ficheros_listos:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # Mapas para inyección dinámica de Agencia
+            # Mapeos maestros basados en listas posicionales para evitar duplicados en la P y la Agencia
+            # Guardamos agrupado por pedido para poder extraer de uno en uno consecutivamente
+            mapa_pedido_largo_a_zonas_list = df_pedidos_recoger.groupby('Número_Pedido_Final')['Zona'].apply(lambda x: x.astype(str).str.strip().tolist()).to_dict()
+            
             dict_cols_pr = {col.lower().strip(): col for col in df_pedidos_recoger.columns}
             col_agencia_origen = dict_cols_pr.get('agencia', None)
             if col_agencia_origen:
-                mapa_pedido_largo_a_agencia = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger[col_agencia_origen].astype(str).str.strip()))
+                mapa_pedido_largo_a_agencias_list = df_pedidos_recoger.groupby('Número_Pedido_Final')[col_agencia_origen].apply(lambda x: x.astype(str).str.strip().tolist()).to_dict()
             else:
-                mapa_pedido_largo_a_agencia = {}
-                
-            mapa_pedido_largo_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
+                mapa_pedido_largo_a_agencias_list = {}
 
             # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock ----
             col_stock_ref = df_stock.columns[0]
@@ -288,8 +288,6 @@ if ficheros_listos:
             with pestana1:
                 st.subheader("Fichero Resultante Cecopartners")
                 st.dataframe(df_subida_plantilla)
-                
-                # NUEVA MEJORA: Nombre de archivo con fecha AAAAMMDD al principio
                 st.download_button(
                     label="📥 Descargar Fichero Subida Cecopartners (Excel)",
                     data=to_excel(df_subida_plantilla),
@@ -303,8 +301,6 @@ if ficheros_listos:
                 
                 if not df_cancelaciones.empty:
                     excel_cancelados = to_excel(df_cancelaciones)
-                    
-                    # NUEVA MEJORA: Nombre de archivo con fecha AAAAMMDD al principio
                     nombre_archivo_cancelados = f"{fecha_aaaammdd}_CancelOrders_SellerFlexFR.xlsx"
                     st.download_button(
                         label="📥 Descargar Fichero Cancelaciones (Excel)",
@@ -327,7 +323,6 @@ if ficheros_listos:
             with pestana3:
                 st.subheader("Generación de Fichero Definitivo de Almacén")
                 
-                # Sección de comunicación fija al principio
                 st.subheader("📧 Comunicación Automatizada con Almacén Francia")
                 st.write("Adjunta tu pantallazo diario de transportistas y envíalo directamente a **almacenfrancia@cecotec.es**:")
                 fichero_nuevo_diario = st.file_uploader("Adjuntar el nuevo fichero diario o pantallazo de transportistas", type=["png", "jpg", "jpeg", "pdf", "xlsx", "csv"], key="fichero_diario_transp")
@@ -341,7 +336,6 @@ if ficheros_listos:
                             excel_to_send = to_excel(pd.DataFrame([{"Aviso": "Verificar listado definitivo adjunto"}]))
                             filename_to_send = f"{fecha_aaaammdd}_Pre-Alerta_Transporte.xlsx"
                             
-                        # El asunto cambiará automáticamente a "SELLER FLEX FR - DD/MM/YYYY" en la función backend
                         exito_mail = enviar_correo_background(excel_to_send, filename_to_send, "almacenfrancia@cecotec.es", fichero_nuevo_diario)
                         if exito_mail:
                             st.success("📬 ¡Correo enviado con éxito a almacenfrancia@cecotec.es con copia a Juan y Antonio!")
@@ -351,14 +345,12 @@ if ficheros_listos:
                 Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo junto al listado de envíos globales de Amazon:
                 """)
                 
-                # Cargadores de la pestaña 3
                 col_c1, col_c2 = st.columns(2)
                 with col_c1:
                     cecopartners_downloaded_file = st.file_uploader("1. Subir Fichero Descargado de Cecopartners (Con las D)", type=["csv", "xlsx"], key="ceco_almacen")
                 with col_c2:
                     sran_shipments_file = st.file_uploader("2. Subir Nuevo Informe Global de Envíos (CSV de Amazon SRAN)", type=["csv", "txt"], key="sran_shipments")
 
-                # CRUCE DE DATOS PRECISO SOLICITADO
                 if cecopartners_downloaded_file is not None and sran_shipments_file is not None:
                     df_ceco_in = load_data(cecopartners_downloaded_file)
                     
@@ -374,35 +366,59 @@ if ficheros_listos:
                     
                     if df_ceco_in is not None and not df_ceco_in.empty and df_sran is not None and not df_sran.empty:
                         try:
-                            # Copia exacta del archivo devuelto por Cecopartners para no corromper columnas
                             df_almacen_fr = df_ceco_in.copy()
-                            
-                            # Normalizamos cabeceras del CSV de Amazon SRAN por caracteres corruptos (ej: Identificador de env√≠o)
                             df_sran.columns = [str(c).replace('env√≠o', 'envío').strip() for c in df_sran.columns]
                             
                             col_sran_pedido = 'Identificador de pedido de cliente'
                             col_sran_envio = 'Identificador de envío'
                             
-                            # CRUCE 1 (Para obtener P): Cruzamos columna B (Identificador de envío) del nuevo fichero con columna F (Identificador de pedido) de lista recogida
-                            mapa_recogida_zona = dict(zip(df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
-                            df_sran['Zona_Calculada'] = df_sran[col_sran_envio].astype(str).str.strip().map(mapa_recogida_zona).fillna("")
+                            # ---- SOLUCIÓN AL BUG DE REPETIDOS: MAPEO SECUENCIAL NO DESTRUCTIVO ----
+                            # En lugar de diccionarios planos, agrupamos los envíos de Amazon en listas por cada pedido
+                            mapa_sran_u_list = df_sran.groupby(col_sran_pedido)[col_sran_envio].apply(lambda x: x.astype(str).str.strip().tolist()).to_dict()
                             
-                            # Crear mapas maestros basados en la columna de unión común: Identificador de pedido de cliente
-                            mapa_sran_u = dict(zip(df_sran[col_sran_pedido].astype(str).str.strip(), df_sran[col_sran_envio].astype(str).str.strip()))
-                            mapa_sran_p = dict(zip(df_sran[col_sran_pedido].astype(str).str.strip(), df_sran['Zona_Calculada'].astype(str).str.strip()))
-                            
-                            # CRUCE 2 (Para obtener U): Localizamos la columna de cruce de Cecopartners ('NÚMERO DE LÍNEA DE PEDIDO DE CLIENTE')
+                            # Buscamos la columna de cruce clave de Cecopartners
                             dict_cols_ceco = {col.lower().strip(): col for col in df_almacen_fr.columns}
                             clave_ceco = dict_cols_ceco.get('número de línea de pedido de cliente', df_almacen_fr.columns[-9] if len(df_almacen_fr.columns) > 9 else df_almacen_fr.columns[-1])
                             
-                            pedidos_ceco_claves = df_almacen_fr[clave_ceco].astype(str).str.strip()
+                            # Inicializamos las listas vacías para rellenar fila por fila de forma ordenada
+                            lista_final_u = []
+                            lista_final_p = []
+                            lista_final_agencia = []
                             
-                            # Inyección exacta de los datos calculados en las columnas A y B del archivo base
-                            df_almacen_fr['U'] = pedidos_ceco_claves.map(mapa_sran_u).fillna("")
-                            df_almacen_fr['P'] = pedidos_ceco_claves.map(mapa_sran_p).fillna("")
+                            # Duplicamos temporalmente las listas de memoria para ir consumiéndolas (`.pop(0)`)
+                            mapas_u_consumibles = {k: list(v) for k, v in mapa_sran_u_list.items()}
+                            mapas_p_consumibles = {k: list(v) for k, v in mapa_pedido_largo_a_zonas_list.items()}
+                            mapas_agencia_consumibles = {k: list(v) for k, v in mapa_pedido_largo_a_agencias_list.items()}
                             
-                            # Inyección de Agencia (Dinámica por mapeo o estática de fallback)
-                            df_almacen_fr['Agencia'] = pedidos_ceco_claves.map(mapa_pedido_largo_a_agencia).fillna('AMZN_FR_SH_SD')
+                            # Iteramos registro por registro del archivo de Cecopartners
+                            for idx, row in df_almacen_fr.iterrows():
+                                codigo_pedido = str(row[clave_ceco]).strip()
+                                
+                                # Extraemos e inyectamos de forma estricta la U independiente correspondiente
+                                if codigo_pedido in mapas_u_consumibles and len(mapas_u_consumibles[codigo_pedido]) > 0:
+                                    envio_asignado = mapas_u_consumibles[codigo_pedido].pop(0)
+                                else:
+                                    envio_asignado = ""
+                                lista_final_u.append(envio_asignado)
+                                
+                                # Extraemos e inyectamos la P independiente correspondiente
+                                if codigo_pedido in mapas_p_consumibles and len(mapas_p_consumibles[codigo_pedido]) > 0:
+                                    zona_asignada = mapas_p_consumibles[codigo_pedido].pop(0)
+                                else:
+                                    zona_asignada = ""
+                                lista_final_p.append(zona_asignada)
+                                
+                                # Extraemos e inyectamos la Agencia correspondiente
+                                if codigo_pedido in mapas_agencia_consumibles and len(mapas_agencia_consumibles[codigo_pedido]) > 0:
+                                    agencia_asignada = mapas_agencia_consumibles[codigo_pedido].pop(0)
+                                else:
+                                    agencia_asignada = 'AMZN_FR_SH_SD'
+                                lista_final_agencia.append(agencia_asignada)
+                            
+                            # Escribimos los resultados secuenciales exactos en las columnas correspondientes
+                            df_almacen_fr['U'] = lista_final_u
+                            df_almacen_fr['P'] = lista_final_p
+                            df_almacen_fr['Agencia'] = lista_final_agencia
                             
                             # Borrado automático de columnas basura ('FALSE', 'Disponible')
                             columnas_a_borrar = [c for c in df_almacen_fr.columns if str(c).upper() in ['FALSE', 'DISPONIBLE']]
@@ -414,15 +430,13 @@ if ficheros_listos:
                             df_almacen_fr = df_almacen_fr[cols_ordenadas]
                             
                             st.subheader("📝 Tabla Editable de Almacén Francia")
-                            st.markdown("Puedes modificar cualquier valor de la columna **Agencia** directamente en la pantalla antes de descargar.")
+                            st.markdown("Cada número de pedido repetido ha recibido su identificador de envío `U` correspondiente de forma independiente.")
                             
                             # Editor interactivo en pantalla
                             df_editable_final = st.data_editor(df_almacen_fr, use_container_width=True, num_rows="dynamic")
                             
-                            # Guardar en sesión el binario por si deciden enviarlo por correo arriba
                             st.session_state['df_almacen_final_mem'] = to_excel(df_editable_final)
                             
-                            # NUEVA MEJORA: Nombre de archivo con fecha AAAAMMDD al principio
                             st.download_button(
                                 label="📥 Descargar D-PEDIDOS Almacén Definitivo (Excel)",
                                 data=st.session_state['df_almacen_final_mem'],
@@ -430,7 +444,7 @@ if ficheros_listos:
                                 mime="application/vnd.ms-excel"
                             )
                         except Exception as ex_cruce:
-                            st.error(f"Error procesando el cruce específico de Almacén: {ex_cruce}")
+                            st.error(f"Error procesando el cruce secuencial de Almacén: {ex_cruce}")
                     else:
                         st.warning("Verifica que los archivos subidos contengan registros válidos.")
                 else:
