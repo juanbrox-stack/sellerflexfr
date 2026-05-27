@@ -103,8 +103,8 @@ def to_excel(df):
     return output.getvalue()
 
 
-def enviar_correo_background(excel_data, filename, extra_file=None):
-    """Envía el correo desde el servidor SMTP incluyendo destinatarios en CC y un adjunto opcional."""
+def enviar_correo_background(excel_data, filename, destinatario, extra_file=None):
+    """Envía el correo desde el servidor SMTP incluyendo destinatarios dinámicos y CC asignados."""
     try:
         if "email" not in st.secrets:
             st.error("❌ Error: No se ha encontrado la sección [email] en los Secrets de Streamlit.")
@@ -115,12 +115,11 @@ def enviar_correo_background(excel_data, filename, extra_file=None):
         sender_email = st.secrets["email"]["sender_email"]
         sender_password = st.secrets["email"]["sender_password"]
         
-        destinatario = "fr-sellerflex-support@amazon.com"
         cc_emails = ["juanbrox@cecotec.es", "antoniodiaz@cecotec.es"]
         
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
-        asunto = f"Cancel orders {fecha_hoy}"
-        cuerpo_mensaje = "Good morning,\n\nI attach one order to cancel.\n\nBest regards."
+        asunto = f"Cancel orders {fecha_hoy}" if "support" in destinatario else f"Fichero Definitivo Almacén Francia - {fecha_hoy}"
+        cuerpo_mensaje = "Good morning,\n\nI attach one order to cancel.\n\nBest regards." if "support" in destinatario else f"Buenos días,\n\nAdjunto el archivo definitivo de pedidos procesado para el almacén junto al pantallazo diario de transportistas.\n\nSaludos cordiales."
         
         msg = MIMEMultipart()
         msg['From'] = sender_email
@@ -129,7 +128,7 @@ def enviar_correo_background(excel_data, filename, extra_file=None):
         msg['Subject'] = asunto
         msg.attach(MIMEText(cuerpo_mensaje, 'plain'))
         
-        # Adjunto 1: Fichero Excel de Cancelaciones
+        # Adjunto 1: Fichero Excel Calculado
         part1 = MIMEBase('application', 'octet-stream')
         part1.set_payload(excel_data)
         encoders.encode_base64(part1)
@@ -298,13 +297,44 @@ if ficheros_listos:
                         file_name=nombre_archivo_cancelados,
                         mime="application/vnd.ms-excel"
                     )
+                    
+                    st.markdown("---")
+                    st.subheader("📧 Correo de Cancelación para Amazon")
+                    st.write("Manda directamente el listado de cancelaciones por falta de stock a **fr-sellerflex-support@amazon.com**:")
+                    if st.button("🚀 Enviar Cancelaciones a Amazon Support", type="primary", key="send_cancel_btn"):
+                        with st.spinner("Enviando correo..."):
+                            exito_amazon = enviar_correo_background(excel_cancelados, nombre_archivo_cancelados, "fr-sellerflex-support@amazon.com")
+                            if exito_amazon:
+                                st.success("📬 ¡Correo enviado con éxito a soporte de Amazon!")
                 else:
                     st.info("No se han detectado pedidos para cancelar hoy.")
                 
             with pestana3:
                 st.subheader("Generación de Fichero Definitivo de Almacén")
+                
+                # CORRECCIÓN: El cargador de correo y pantallazo diario ahora está SIEMPRE VISIBLE en el Almacén Francés
+                st.subheader("📧 Comunicación Automatizada con Almacén Francia")
+                st.write("Adjunta tu pantallazo diario de transportistas y envíalo directamente a **almacenfrancia@cecotec.es** junto al fichero definitivo de abajo:")
+                fichero_nuevo_diario = st.file_uploader("Adjuntar el nuevo fichero diario o pantallazo de transportistas", type=["png", "jpg", "jpeg", "pdf", "xlsx", "csv"], key="fichero_diario_transp")
+                
+                if st.button("🚀 Enviar Fichero y Pantallazo Diario a Almacén Francia", key="send_global_mail_btn", type="primary"):
+                    with st.spinner("Conectando con el servidor SMTP y enviando correo al Almacén..."):
+                        # Si hay un fichero definitivo calculado en la sesión, lo mandamos. Si no, mandamos un aviso.
+                        if 'df_almacen_final_mem' in st.session_state:
+                            excel_to_send = st.session_state['df_almacen_final_mem']
+                            filename_to_send = "D-PEDIDOS_FLEX_FR_DEFINITIVO.xlsx"
+                        else:
+                            excel_to_send = to_excel(pd.DataFrame([{"Aviso": "Verificar listado definitivo adjunto"}]))
+                            filename_to_send = "Pre-Alerta_Transporte.xlsx"
+                            
+                        # CORRECCIÓN DESTINATARIO: Enviado directamente a almacenfrancia@cecotec.es
+                        exito_mail = enviar_correo_background(excel_to_send, filename_to_send, "almacenfrancia@cecotec.es", fichero_nuevo_diario)
+                        if exito_mail:
+                            st.success("📬 ¡Correo enviado con éxito a almacenfrancia@cecotec.es con copia a Juan y Antonio!")
+
+                st.markdown("---")
                 st.markdown("""
-                Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo junto al listado de envíos globales de Amazon:
+                **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo junto al listado de envíos globales de Amazon:
                 """)
                 
                 # Cargadores principales de la pestaña 3
@@ -313,25 +343,6 @@ if ficheros_listos:
                     cecopartners_downloaded_file = st.file_uploader("1. Subir Fichero Descargado de Cecopartners (Con las D)", type=["csv", "xlsx"], key="ceco_almacen")
                 with col_c2:
                     sran_shipments_file = st.file_uploader("2. Subir Nuevo Informe Global de Envíos (CSV de Amazon SRAN)", type=["csv", "txt"], key="sran_shipments")
-                
-                # CORRECCIÓN: El cargador de correo y pantallazo diario ahora está SIEMPRE VISIBLE al inicio de la pestaña 3
-                st.markdown("---")
-                st.subheader("📧 Servidor Automatizado de Correo (Pantallazo Diario / Cancelaciones)")
-                fichero_nuevo_diario = st.file_uploader("Adjuntar el nuevo fichero diario o pantallazo de transportistas", type=["png", "jpg", "jpeg", "pdf", "xlsx", "csv"], key="fichero_diario_transp")
-                
-                if st.button("🚀 Enviar Correo a Soporte de Amazon (Directo desde la App)", key="send_global_mail_btn", type="primary"):
-                    with st.spinner("Conectando con el servidor SMTP y enviando correo con los adjuntos..."):
-                        # Si la lista de cancelaciones está vacía, mandamos un aviso formal para no mandar un Excel roto
-                        if not df_cancelaciones.empty:
-                            excel_to_send = to_excel(df_cancelaciones)
-                            filename_to_send = "CancelOrders_SellerFlexFR.xlsx"
-                        else:
-                            excel_to_send = to_excel(pd.DataFrame([{"Aviso": "No cancel orders today"}]))
-                            filename_to_send = "No_Cancel_Orders.xlsx"
-                            
-                        exito_mail = enviar_correo_background(excel_to_send, filename_to_send, fichero_nuevo_diario)
-                        if exito_mail:
-                            st.success("📬 ¡Correo enviado con éxito a fr-sellerflex-support@amazon.com con copia a Juan y Antonio!")
 
                 # CRUCE DE DATOS PRECISO SOLICITADO
                 if cecopartners_downloaded_file is not None and sran_shipments_file is not None:
@@ -349,7 +360,7 @@ if ficheros_listos:
                     
                     if df_ceco_in is not None and not df_ceco_in.empty and df_sran is not None and not df_sran.empty:
                         try:
-                            # Hacemos una copia exacta del archivo devuelto por Cecopartners para no alterar ninguna columna original
+                            # Copia exacta del archivo devuelto por Cecopartners para no corromper columnas
                             df_almacen_fr = df_ceco_in.copy()
                             
                             # Normalizamos cabeceras del CSV de Amazon SRAN por caracteres corruptos (ej: Identificador de env√≠o)
@@ -394,9 +405,12 @@ if ficheros_listos:
                             # Editor interactivo en pantalla
                             df_editable_final = st.data_editor(df_almacen_fr, use_container_width=True, num_rows="dynamic")
                             
+                            # Guardar en sesión el binario por si deciden enviarlo por correo arriba
+                            st.session_state['df_almacen_final_mem'] = to_excel(df_editable_final)
+                            
                             st.download_button(
                                 label="📥 Descargar D-PEDIDOS Almacén Definitivo (Excel)",
-                                data=to_excel(df_editable_final),
+                                data=st.session_state['df_almacen_final_mem'],
                                 file_name="D-PEDIDOS_FLEX_FR_DEFINITIVO.xlsx",
                                 mime="application/vnd.ms-excel"
                             )
