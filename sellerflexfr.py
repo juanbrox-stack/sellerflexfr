@@ -103,8 +103,8 @@ def to_excel(df):
     return output.getvalue()
 
 
-def enviar_correo_background(excel_data, filename):
-    """Envía el correo desde el servidor SMTP incluyendo destinatarios en CC."""
+def enviar_correo_background(excel_data, filename, extra_file=None):
+    """Envía el correo desde el servidor SMTP incluyendo destinatarios en CC y un adjunto opcional."""
     try:
         if "email" not in st.secrets:
             st.error("❌ Error: No se ha encontrado la sección [email] en los Secrets de Streamlit.")
@@ -129,11 +129,20 @@ def enviar_correo_background(excel_data, filename):
         msg['Subject'] = asunto
         msg.attach(MIMEText(cuerpo_mensaje, 'plain'))
         
-        part = MIMEBase('application', 'octet-stream')
-        part.set_payload(excel_data)
-        encoders.encode_base64(part)
-        part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-        msg.attach(part)
+        # Adjunto 1: Fichero Excel de Cancelaciones
+        part1 = MIMEBase('application', 'octet-stream')
+        part1.set_payload(excel_data)
+        encoders.encode_base64(part1)
+        part1.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+        msg.attach(part1)
+        
+        # Adjunto 2: Archivo adicional opcional
+        if extra_file is not None:
+            part2 = MIMEBase('application', 'octet-stream')
+            part2.set_payload(extra_file.read())
+            encoders.encode_base64(part2)
+            part2.add_header('Content-Disposition', f'attachment; filename="{extra_file.name}"')
+            msg.attach(part2)
         
         todos_los_destinatarios = [destinatario] + cc_emails
         
@@ -199,6 +208,18 @@ if ficheros_listos:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
+            # MAPAS GLOBALES DE RESPALDO Y NUEVO MAPEO DINÁMICO DE AGENCIA
+            mapa_pedido_largo_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
+            
+            # NUEVA MEJORA: Detectar dinámicamente si existe la columna 'Agencia' en el listado de pedidos de la barra lateral
+            dict_cols_pr = {col.lower().strip(): col for col in df_pedidos_recoger.columns}
+            col_agencia_origen = dict_cols_pr.get('agencia', None)
+            
+            if col_agencia_origen:
+                mapa_pedido_largo_a_agencia = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger[col_agencia_origen].astype(str).str.strip()))
+            else:
+                mapa_pedido_largo_a_agencia = {}
+
             # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock ----
             col_stock_ref = df_stock.columns[0]
             col_stock_cant = None
@@ -215,7 +236,7 @@ if ficheros_listos:
             mapa_referencias_stock = dict(zip(df_stock[col_stock_ref], df_stock[col_stock_cant]))
             df_pedidos_recoger['Stock_Actual'] = df_pedidos_recoger['SKU_Limpio'].map(mapa_referencias_stock).fillna(0)
             
-            # Filtrado por stock mínimo <= 2
+            # Filtrado por stock mínimo ≤ 2
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['Stock_Actual'] > 2
             
             # ---- FILTRADO Y DIVISIÓN ----
@@ -287,25 +308,28 @@ if ficheros_listos:
                     st.subheader("📧 Servidor Automatizado de Correo")
                     st.write("Presiona el siguiente botón para enviar el fichero de cancelaciones a **fr-sellerflex-support@amazon.com**:")
                     
-                    if st.button("🚀 Enviar Fichero de Cancelación Directamente", type="primary"):
+                    if st.button("🚀 Enviar Fichero de Cancelación Directamente", type="primary", key="send_cancel_btn"):
                         with st.spinner("Conectando con el servidor SMTP y enviando correo..."):
                             exito = enviar_correo_background(excel_cancelados, nombre_archivo_cancelados)
                             if exito:
-                                st.success("📬 ¡Correo enviado con éxito!")
+                                st.success("📬 ¡Correo de cancelaciones enviado con éxito!")
                 else:
                     st.info("No se han detectado pedidos para cancelar.")
                 
             with pestana3:
                 st.subheader("Generación de Fichero Definitivo de Almacén")
+                st.markdown("""
+                Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo junto al listado de envíos globales de Amazon:
+                """)
                 
-                # CARGADORES DE LA PESTAÑA 3
+                # Cargadores de la pestaña 3
                 col_c1, col_c2 = st.columns(2)
                 with col_c1:
                     cecopartners_downloaded_file = st.file_uploader("1. Subir Fichero Descargado de Cecopartners (Con las D)", type=["csv", "xlsx"], key="ceco_almacen")
                 with col_c2:
                     sran_shipments_file = st.file_uploader("2. Subir Nuevo Informe Global de Envíos (CSV de Amazon SRAN)", type=["csv", "txt"], key="sran_shipments")
                 
-                # Cargador del pantallazo/fichero diario variable solicitado
+                # Cargador opcional del pantallazo/fichero diario variable de transportistas
                 st.markdown("---")
                 fichero_nuevo_diario = st.file_uploader("Adjuntar el nuevo fichero diario o pantallazo de transportistas (Opcional)", type=["png", "jpg", "jpeg", "pdf", "xlsx", "csv"], key="fichero_diario_transp")
                 
@@ -314,15 +338,14 @@ if ficheros_listos:
                     if st.button("📧 Enviar Correo con Pantallazo Diario adjunto", key="send_extra_mail"):
                         with st.spinner("Enviando correo con el archivo diario adjunto..."):
                             excel_to_send = to_excel(df_cancelaciones) if not df_cancelaciones.empty else to_excel(pd.DataFrame([{"Info": "No cancel orders today"}]))
-                            exito_mail = enviar_correo_background(excel_to_send, "CancelOrders.xlsx")
+                            exito_mail = enviar_correo_background(excel_to_send, "CancelOrders.xlsx", fichero_nuevo_diario)
                             if exito_mail:
-                                st.success("📬 ¡Correo enviado con éxito!")
+                                st.success("📬 ¡Correo con el Pantallazo Diario enviado con éxito!")
 
-                # PROCESO DE CRUCE PRE_CORREGIDO CIRÚRGICO
+                # CRUCE DE DATOS POR CSV SRAN DE AMAZON
                 if cecopartners_downloaded_file is not None and sran_shipments_file is not None:
                     df_ceco_in = load_data(cecopartners_downloaded_file)
                     
-                    # Tratamiento del CSV de Amazon SRAN con delimitador ';'
                     try:
                         sran_bytes = sran_shipments_file.read()
                         df_sran = pd.read_csv(io.BytesIO(sran_bytes), sep=';', encoding='utf-8')
@@ -335,66 +358,62 @@ if ficheros_listos:
                     
                     if df_ceco_in is not None and not df_ceco_in.empty and df_sran is not None and not df_sran.empty:
                         try:
-                            # Hacemos una copia limpia para no dañar ninguna columna nativa
                             df_almacen_fr = df_ceco_in.copy()
                             
-                            # 1. Normalización de las columnas del nuevo fichero (Manejo de caracteres corruptos como 'Identificador de env√≠o')
+                            # Normalizamos cabeceras del CSV de Amazon SRAN
                             df_sran.columns = [str(c).replace('env√≠o', 'envío').strip() for c in df_sran.columns]
                             
                             col_sran_pedido = 'Identificador de pedido de cliente'
                             col_sran_envio = 'Identificador de envío'
                             
-                            # 2. Mapeo de la lista de recogida original (Fichero de la barra lateral 'df_pedidos_recoger')
-                            # Cruzamos columna B (Identificador de envío) del nuevo fichero con la columna F (Identificador de pedido) de lista recogida -> Extraemos 'Zona'
+                            # Mapeamos la lista de recogida original (Barra lateral) para rescatar la Zona mediante el ID de envío
                             mapa_recogida_zona = dict(zip(df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
-                            
-                            # Asociamos en el nuevo fichero cada Identificador de envío con su Zona correspondiente
                             df_sran['Zona_Calculada'] = df_sran[col_sran_envio].astype(str).str.strip().map(mapa_recogida_zona).fillna("")
                             
-                            # 3. Creación de mapas maestros basados en la clave de unión: 'Identificador de pedido de cliente'
+                            # Creación de mapas definitivos indexados por el Número de Pedido de Amazon
                             mapa_sran_u = dict(zip(df_sran[col_sran_pedido].astype(str).str.strip(), df_sran[col_sran_envio].astype(str).str.strip()))
                             mapa_sran_p = dict(zip(df_sran[col_sran_pedido].astype(str).str.strip(), df_sran['Zona_Calculada'].astype(str).str.strip()))
                             
-                            # 4. Inyección en el archivo devuelto de Cecopartners usando la columna 'NÚMERO DE LÍNEA DE PEDIDO DE CLIENTE'
-                            clave_ceco = 'NÚMERO DE LÍNEA DE PEDIDO DE CLIENTE'
-                            if clave_ceco not in df_almacen_fr.columns:
-                                # Fallback por si cambia de nombre la columna de ceco
-                                for c in df_almacen_fr.columns:
-                                    if 'línea' in c.lower() or 'linea' in c.lower() or 'erp' in c.lower():
-                                        clave_ceco = c
-                                        break
-                                        
+                            # Buscemos la columna de cruce de Cecopartners
+                            dict_cols_ceco = {col.lower().strip(): col for col in df_almacen_fr.columns}
+                            clave_ceco = dict_cols_ceco.get('número de línea de pedido de cliente', df_almacen_fr.columns[-9] if len(df_almacen_fr.columns) > 9 else df_almacen_fr.columns[-1])
+                            
                             pedidos_ceco_claves = df_almacen_fr[clave_ceco].astype(str).str.strip()
                             
-                            # Cumplimentación definitiva de las columnas A y B del archivo final
+                            # Inyección estricta y limpia de datos sin alterar el resto del archivo
                             df_almacen_fr['U'] = pedidos_ceco_claves.map(mapa_sran_u).fillna("")
                             df_almacen_fr['P'] = pedidos_ceco_claves.map(mapa_sran_p).fillna("")
-                            df_almacen_fr['Agencia'] = 'AMZN_FR_SH_SD'
                             
-                            # Limpieza automática de columnas basura ('FALSE', 'Disponible')
+                            # NUEVA MEJORA EN AGENCIA: Si existe en la Opción 2 se mapea dinámicamente, si no se usa el valor estático
+                            df_almacen_fr['Agencia'] = pedidos_ceco_claves.map(mapa_pedido_largo_a_agencia).fillna('AMZN_FR_SH_SD')
+                            
+                            # Borrado automático de columnas basura
                             columnas_a_borrar = [c for c in df_almacen_fr.columns if str(c).upper() in ['FALSE', 'DISPONIBLE']]
                             if columnas_a_borrar:
                                 df_almacen_fr.drop(columns=columnas_a_borrar, inplace=True)
                             
-                            # Reordenación para asegurar que P, U y Agencia sean las columnas A, B y C del Excel resultante
+                            # Reordenación para fijar P, U y Agencia al principio
                             cols_ordenadas = ['P', 'U', 'Agencia'] + [c for c in df_almacen_fr.columns if c not in ['P', 'U', 'Agencia']]
                             df_almacen_fr = df_almacen_fr[cols_ordenadas]
                             
-                            st.success("🎉 ¡Columnas A (P) y B (U) cumplimentadas con éxito absoluto mediante las claves cruzadas de Amazon!")
-                            st.dataframe(df_almacen_fr)
+                            # NUEVA MEJORA: Habilitar data_editor interactivo para permitir cambios manuales directamente en las agencias o celdas
+                            st.subheader("📝 Tabla Editable de Almacén Francia")
+                            st.markdown("Puedes hacer doble clic sobre cualquier celda de la columna **Agencia** (o cualquier otra) para modificar su valor en vivo antes de descargar.")
+                            
+                            df_editable_final = st.data_editor(df_almacen_fr, use_container_width=True, num_rows="dynamic")
                             
                             st.download_button(
                                 label="📥 Descargar D-PEDIDOS Almacén Definitivo (Excel)",
-                                data=to_excel(df_almacen_fr),
+                                data=to_excel(df_editable_final),
                                 file_name="D-PEDIDOS_FLEX_FR_DEFINITIVO.xlsx",
                                 mime="application/vnd.ms-excel"
                             )
                         except Exception as ex_cruce:
-                            st.error(f"Error procesando el cruce específico: {ex_cruce}")
+                            st.error(f"Error procesando el cruce específico de Almacén: {ex_cruce}")
                     else:
                         st.warning("Verifica que los archivos subidos contengan registros válidos.")
                 else:
-                    st.info("⏳ Por favor, sube el Fichero de Cecopartners (1) y el Nuevo CSV de Envíos de Amazon (2) para rellenar las columnas A y B automáticamente.")
+                    st.info("⏳ Por favor, sube el archivo de Cecopartners (1) y el Nuevo CSV de Envíos de Amazon (2) en esta pestaña.")
 
         except Exception as e:
             st.error(f"Error estructural en el procesamiento: {e}")
