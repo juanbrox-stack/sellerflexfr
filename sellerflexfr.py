@@ -118,8 +118,14 @@ def enviar_correo_background(excel_data, filename, destinatario, extra_file=None
         cc_emails = ["juanbrox@cecotec.es", "antoniodiaz@cecotec.es"]
         
         fecha_hoy = datetime.now().strftime("%d/%m/%Y")
-        asunto = f"Cancel orders {fecha_hoy}" if "support" in destinatario else f"Fichero Definitivo Almacén Francia - {fecha_hoy}"
-        cuerpo_mensaje = "Good morning,\n\nI attach one order to cancel.\n\nBest regards." if "support" in destinatario else f"Buenos días,\n\nAdjunto el archivo definitivo de pedidos procesado para el almacén junto al pantallazo diario de transportistas.\n\nSaludos cordiales."
+        
+        # NUEVA MEJORA: Cambio de estructura de asunto según el destinatario asignado
+        if "support" in destinatario:
+            asunto = f"Cancel orders {fecha_hoy}"
+            cuerpo_mensaje = "Good morning,\n\nI attach one order to cancel.\n\nBest regards."
+        else:
+            asunto = f"SELLER FLEX FR - {fecha_hoy}"
+            cuerpo_mensaje = f"Buenos días,\n\nAdjunto el archivo definitivo de pedidos procesado para el almacén junto al pantallazo diario de transportistas.\n\nSaludos cordiales."
         
         msg = MIMEMultipart()
         msg['From'] = sender_email
@@ -155,6 +161,9 @@ def enviar_correo_background(excel_data, filename, destinatario, extra_file=None
         st.error(f"❌ Error al enviar el correo a través del servidor: {e}")
         return False
 
+
+# Generación de variables de fecha dinámicas
+fecha_aaaammdd = datetime.now().strftime("%Y%m%d")
 
 # Control condicional de la carga de ficheros obligatorios en barra lateral
 ficheros_listos = False
@@ -214,6 +223,8 @@ if ficheros_listos:
                 mapa_pedido_largo_a_agencia = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger[col_agencia_origen].astype(str).str.strip()))
             else:
                 mapa_pedido_largo_a_agencia = {}
+                
+            mapa_pedido_largo_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
 
             # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock ----
             col_stock_ref = df_stock.columns[0]
@@ -277,10 +288,12 @@ if ficheros_listos:
             with pestana1:
                 st.subheader("Fichero Resultante Cecopartners")
                 st.dataframe(df_subida_plantilla)
+                
+                # NUEVA MEJORA: Nombre de archivo con fecha AAAAMMDD al principio
                 st.download_button(
                     label="📥 Descargar Fichero Subida Cecopartners (Excel)",
                     data=to_excel(df_subida_plantilla),
-                    file_name="SELLER_FLEX_FR_PROCESADO.xlsx",
+                    file_name=f"{fecha_aaaammdd}_SELLER_FLEX_FR_PROCESADO.xlsx",
                     mime="application/vnd.ms-excel"
                 )
                 
@@ -290,7 +303,9 @@ if ficheros_listos:
                 
                 if not df_cancelaciones.empty:
                     excel_cancelados = to_excel(df_cancelaciones)
-                    nombre_archivo_cancelados = "CancelOrders_SellerFlexFR.xlsx"
+                    
+                    # NUEVA MEJORA: Nombre de archivo con fecha AAAAMMDD al principio
+                    nombre_archivo_cancelados = f"{fecha_aaaammdd}_CancelOrders_SellerFlexFR.xlsx"
                     st.download_button(
                         label="📥 Descargar Fichero Cancelaciones (Excel)",
                         data=excel_cancelados,
@@ -300,7 +315,7 @@ if ficheros_listos:
                     
                     st.markdown("---")
                     st.subheader("📧 Correo de Cancelación para Amazon")
-                    st.write("Manda directamente el listado de cancelaciones por falta de stock a **fr-sellerflex-support@amazon.com**:")
+                    st.write("Manda el listado de cancelaciones por falta de stock directamente a **fr-sellerflex-support@amazon.com**:")
                     if st.button("🚀 Enviar Cancelaciones a Amazon Support", type="primary", key="send_cancel_btn"):
                         with st.spinner("Enviando correo..."):
                             exito_amazon = enviar_correo_background(excel_cancelados, nombre_archivo_cancelados, "fr-sellerflex-support@amazon.com")
@@ -312,32 +327,31 @@ if ficheros_listos:
             with pestana3:
                 st.subheader("Generación de Fichero Definitivo de Almacén")
                 
-                # CORRECCIÓN: El cargador de correo y pantallazo diario ahora está SIEMPRE VISIBLE en el Almacén Francés
+                # Sección de comunicación fija al principio
                 st.subheader("📧 Comunicación Automatizada con Almacén Francia")
-                st.write("Adjunta tu pantallazo diario de transportistas y envíalo directamente a **almacenfrancia@cecotec.es** junto al fichero definitivo de abajo:")
+                st.write("Adjunta tu pantallazo diario de transportistas y envíalo directamente a **almacenfrancia@cecotec.es**:")
                 fichero_nuevo_diario = st.file_uploader("Adjuntar el nuevo fichero diario o pantallazo de transportistas", type=["png", "jpg", "jpeg", "pdf", "xlsx", "csv"], key="fichero_diario_transp")
                 
                 if st.button("🚀 Enviar Fichero y Pantallazo Diario a Almacén Francia", key="send_global_mail_btn", type="primary"):
                     with st.spinner("Conectando con el servidor SMTP y enviando correo al Almacén..."):
-                        # Si hay un fichero definitivo calculado en la sesión, lo mandamos. Si no, mandamos un aviso.
                         if 'df_almacen_final_mem' in st.session_state:
                             excel_to_send = st.session_state['df_almacen_final_mem']
-                            filename_to_send = "D-PEDIDOS_FLEX_FR_DEFINITIVO.xlsx"
+                            filename_to_send = f"{fecha_aaaammdd}_D-PEDIDOS_FLEX_FR_DEFINITIVO.xlsx"
                         else:
                             excel_to_send = to_excel(pd.DataFrame([{"Aviso": "Verificar listado definitivo adjunto"}]))
-                            filename_to_send = "Pre-Alerta_Transporte.xlsx"
+                            filename_to_send = f"{fecha_aaaammdd}_Pre-Alerta_Transporte.xlsx"
                             
-                        # CORRECCIÓN DESTINATARIO: Enviado directamente a almacenfrancia@cecotec.es
+                        # El asunto cambiará automáticamente a "SELLER FLEX FR - DD/MM/YYYY" en la función backend
                         exito_mail = enviar_correo_background(excel_to_send, filename_to_send, "almacenfrancia@cecotec.es", fichero_nuevo_diario)
                         if exito_mail:
                             st.success("📬 ¡Correo enviado con éxito a almacenfrancia@cecotec.es con copia a Juan y Antonio!")
 
                 st.markdown("---")
                 st.markdown("""
-                **Paso intermedio:** Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo junto al listado de envíos globales de Amazon:
+                Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo junto al listado de envíos globales de Amazon:
                 """)
                 
-                # Cargadores principales de la pestaña 3
+                # Cargadores de la pestaña 3
                 col_c1, col_c2 = st.columns(2)
                 with col_c1:
                     cecopartners_downloaded_file = st.file_uploader("1. Subir Fichero Descargado de Cecopartners (Con las D)", type=["csv", "xlsx"], key="ceco_almacen")
@@ -408,10 +422,11 @@ if ficheros_listos:
                             # Guardar en sesión el binario por si deciden enviarlo por correo arriba
                             st.session_state['df_almacen_final_mem'] = to_excel(df_editable_final)
                             
+                            # NUEVA MEJORA: Nombre de archivo con fecha AAAAMMDD al principio
                             st.download_button(
                                 label="📥 Descargar D-PEDIDOS Almacén Definitivo (Excel)",
                                 data=st.session_state['df_almacen_final_mem'],
-                                file_name="D-PEDIDOS_FLEX_FR_DEFINITIVO.xlsx",
+                                file_name=f"{fecha_aaaammdd}_D-PEDIDOS_FLEX_FR_DEFINITIVO.xlsx",
                                 mime="application/vnd.ms-excel"
                             )
                         except Exception as ex_cruce:
