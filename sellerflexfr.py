@@ -199,10 +199,6 @@ if ficheros_listos:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # MAPAS GLOBALES DE RESPALDO (Por si faltara algún cruce)
-            mapa_pedido_largo_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
-            mapa_pedido_largo_a_envio_backup = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()))
-
             # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock ----
             col_stock_ref = df_stock.columns[0]
             col_stock_cant = None
@@ -322,59 +318,69 @@ if ficheros_listos:
                             if exito_mail:
                                 st.success("📬 ¡Correo enviado con éxito!")
 
-                # PROCESO DE CRUCE DE LA MEJORA SOLICITADA
+                # PROCESO DE CRUCE PRE_CORREGIDO CIRÚRGICO
                 if cecopartners_downloaded_file is not None and sran_shipments_file is not None:
                     df_ceco_in = load_data(cecopartners_downloaded_file)
                     
-                    # El fichero SRAN de Amazon viene separado típicamente por punto y coma (;)
+                    # Tratamiento del CSV de Amazon SRAN con delimitador ';'
                     try:
                         sran_bytes = sran_shipments_file.read()
                         df_sran = pd.read_csv(io.BytesIO(sran_bytes), sep=';', encoding='utf-8')
                         if len(df_sran.columns) <= 1:
                             df_sran = pd.read_csv(io.BytesIO(sran_bytes), sep=',', encoding='utf-8')
                     except Exception:
-                        sran_bytes = sran_shipments_file.seek(0) or sran_shipments_file.read()
+                        sran_shipments_file.seek(0)
+                        sran_bytes = sran_shipments_file.read()
                         df_sran = pd.read_csv(io.BytesIO(sran_bytes), sep=';', encoding='latin-1', on_bad_lines='skip')
                     
                     if df_ceco_in is not None and not df_ceco_in.empty and df_sran is not None and not df_sran.empty:
                         try:
-                            # Hacer una copia exacta para no alterar ninguna columna original
+                            # Hacemos una copia limpia para no dañar ninguna columna nativa
                             df_almacen_fr = df_ceco_in.copy()
                             
-                            # Localizamos la columna clave de Cecopartners ('NÚMERO ERP')
-                            dict_cols_ceco = {col.lower().strip(): col for col in df_almacen_fr.columns}
-                            col_ceco_pedido = dict_cols_ceco.get('número erp', dict_cols_ceco.get('addressee_order_number', df_almacen_fr.columns[-1]))
+                            # 1. Normalización de las columnas del nuevo fichero (Manejo de caracteres corruptos como 'Identificador de env√≠o')
+                            df_sran.columns = [str(c).replace('env√≠o', 'envío').strip() for c in df_sran.columns]
                             
-                            # Limpieza e indexación de códigos Cecopartners
-                            pedidos_ceco_limpios = df_almacen_fr[col_ceco_pedido].astype(str).str.strip()
+                            col_sran_pedido = 'Identificador de pedido de cliente'
+                            col_sran_envio = 'Identificador de envío'
                             
-                            # ---- NUEVA MEJORA: MAPA EXTRACTOR DESDE EL CSV DE AMAZON SRAN ----
-                            # Columna J (Identificador de pedido de cliente) -> Columna B (Identificador de envío)
-                            df_sran['Pedido_Clean'] = df_sran['Identificador de pedido de cliente'].astype(str).str.strip()
-                            df_sran['Envio_Clean'] = df_sran['Identificador de envío'].astype(str).str.strip()
+                            # 2. Mapeo de la lista de recogida original (Fichero de la barra lateral 'df_pedidos_recoger')
+                            # Cruzamos columna B (Identificador de envío) del nuevo fichero con la columna F (Identificador de pedido) de lista recogida -> Extraemos 'Zona'
+                            mapa_recogida_zona = dict(zip(df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
                             
-                            mapa_sran_envio = dict(zip(df_sran['Pedido_Clean'], df_sran['Envio_Clean']))
+                            # Asociamos en el nuevo fichero cada Identificador de envío con su Zona correspondiente
+                            df_sran['Zona_Calculada'] = df_sran[col_sran_envio].astype(str).str.strip().map(mapa_recogida_zona).fillna("")
                             
-                            # ---- ASIGNACIÓN QUIRÚRGICA DE LAS COLUMNAS REQUERIDAS ----
-                            # Columna U: Identificador de envío mapeado desde el nuevo CSV (con backup si no se encuentra)
-                            df_almacen_fr['U'] = pedidos_ceco_limpios.map(mapa_sran_envio).fillna(pedidos_ceco_limpios.map(mapa_pedido_largo_a_envio_backup)).fillna("")
+                            # 3. Creación de mapas maestros basados en la clave de unión: 'Identificador de pedido de cliente'
+                            mapa_sran_u = dict(zip(df_sran[col_sran_pedido].astype(str).str.strip(), df_sran[col_sran_envio].astype(str).str.strip()))
+                            mapa_sran_p = dict(zip(df_sran[col_sran_pedido].astype(str).str.strip(), df_sran['Zona_Calculada'].astype(str).str.strip()))
                             
-                            # Columna P: Zona mapeada desde el mapa de pedidos original
-                            df_almacen_fr['P'] = pedidos_ceco_limpios.map(mapa_pedido_largo_a_zona).fillna("")
+                            # 4. Inyección en el archivo devuelto de Cecopartners usando la columna 'NÚMERO DE LÍNEA DE PEDIDO DE CLIENTE'
+                            clave_ceco = 'NÚMERO DE LÍNEA DE PEDIDO DE CLIENTE'
+                            if clave_ceco not in df_almacen_fr.columns:
+                                # Fallback por si cambia de nombre la columna de ceco
+                                for c in df_almacen_fr.columns:
+                                    if 'línea' in c.lower() or 'linea' in c.lower() or 'erp' in c.lower():
+                                        clave_ceco = c
+                                        break
+                                        
+                            pedidos_ceco_claves = df_almacen_fr[clave_ceco].astype(str).str.strip()
                             
-                            # Columna Agencia fija
+                            # Cumplimentación definitiva de las columnas A y B del archivo final
+                            df_almacen_fr['U'] = pedidos_ceco_claves.map(mapa_sran_u).fillna("")
+                            df_almacen_fr['P'] = pedidos_ceco_claves.map(mapa_sran_p).fillna("")
                             df_almacen_fr['Agencia'] = 'AMZN_FR_SH_SD'
                             
-                            # BORRADO DE COLUMNAS BASURA AUTOMÁTICO (Elimina 'FALSE' o 'Disponible')
+                            # Limpieza automática de columnas basura ('FALSE', 'Disponible')
                             columnas_a_borrar = [c for c in df_almacen_fr.columns if str(c).upper() in ['FALSE', 'DISPONIBLE']]
                             if columnas_a_borrar:
                                 df_almacen_fr.drop(columns=columnas_a_borrar, inplace=True)
                             
-                            # REORDENACIÓN HISTÓRICA PERFECTA
+                            # Reordenación para asegurar que P, U y Agencia sean las columnas A, B y C del Excel resultante
                             cols_ordenadas = ['P', 'U', 'Agencia'] + [c for c in df_almacen_fr.columns if c not in ['P', 'U', 'Agencia']]
                             df_almacen_fr = df_almacen_fr[cols_ordenadas]
                             
-                            st.success("🎉 ¡Columnas A y B cumplimentadas y corregidas perfectamente gracias al nuevo cruce del archivo de envíos Amazon!")
+                            st.success("🎉 ¡Columnas A (P) y B (U) cumplimentadas con éxito absoluto mediante las claves cruzadas de Amazon!")
                             st.dataframe(df_almacen_fr)
                             
                             st.download_button(
@@ -384,15 +390,14 @@ if ficheros_listos:
                                 mime="application/vnd.ms-excel"
                             )
                         except Exception as ex_cruce:
-                            st.error(f"Error procesando el cruce de los ficheros en Almacén: {ex_cruce}")
+                            st.error(f"Error procesando el cruce específico: {ex_cruce}")
                     else:
-                        st.warning("Asegúrate de que los archivos subidos contengan datos válidos.")
+                        st.warning("Verifica que los archivos subidos contengan registros válidos.")
                 else:
-                    st.info("⏳ Esperando que cargues de manera conjunta el archivo de Cecopartners (1) y el Nuevo Informe de Envíos de Amazon (2) en esta pestaña.")
+                    st.info("⏳ Por favor, sube el Fichero de Cecopartners (1) y el Nuevo CSV de Envíos de Amazon (2) para rellenar las columnas A y B automáticamente.")
 
         except Exception as e:
-            st.error(f"Error estructural en las columnas de los ficheros: {e}")
-            st.warning("Asegúrate de que las columnas coincidan con las estructuras estándar.")
+            st.error(f"Error estructural en el procesamiento: {e}")
 else:
     st.sidebar.warning("Falta subir archivos obligatorios.")
     st.info("👋 Por favor, carga los archivos requeridos en la barra lateral para empezar a operar.")
