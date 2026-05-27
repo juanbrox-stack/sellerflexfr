@@ -136,7 +136,7 @@ def enviar_correo_background(excel_data, filename, extra_file=None):
         part1.add_header('Content-Disposition', f'attachment; filename="{filename}"')
         msg.attach(part1)
         
-        # Adjunto 2: Archivo adicional opcional
+        # Adjunto 2: Pantallazo o archivo diario adicional si el usuario lo sube
         if extra_file is not None:
             part2 = MIMEBase('application', 'octet-stream')
             part2.set_payload(extra_file.read())
@@ -208,13 +208,9 @@ if ficheros_listos:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # MAPAS GLOBALES DE RESPALDO Y NUEVO MAPEO DINÁMICO DE AGENCIA
-            mapa_pedido_largo_a_zona = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
-            
-            # NUEVA MEJORA: Detectar dinámicamente si existe la columna 'Agencia' en el listado de pedidos de la barra lateral
+            # Mapas para inyección dinámica de Agencia
             dict_cols_pr = {col.lower().strip(): col for col in df_pedidos_recoger.columns}
             col_agencia_origen = dict_cols_pr.get('agencia', None)
-            
             if col_agencia_origen:
                 mapa_pedido_largo_a_agencia = dict(zip(df_pedidos_recoger['Número_Pedido_Final'].astype(str).str.strip(), df_pedidos_recoger[col_agencia_origen].astype(str).str.strip()))
             else:
@@ -296,25 +292,14 @@ if ficheros_listos:
                 if not df_cancelaciones.empty:
                     excel_cancelados = to_excel(df_cancelaciones)
                     nombre_archivo_cancelados = "CancelOrders_SellerFlexFR.xlsx"
-                    
                     st.download_button(
                         label="📥 Descargar Fichero Cancelaciones (Excel)",
                         data=excel_cancelados,
                         file_name=nombre_archivo_cancelados,
                         mime="application/vnd.ms-excel"
                     )
-                    
-                    st.markdown("---")
-                    st.subheader("📧 Servidor Automatizado de Correo")
-                    st.write("Presiona el siguiente botón para enviar el fichero de cancelaciones a **fr-sellerflex-support@amazon.com**:")
-                    
-                    if st.button("🚀 Enviar Fichero de Cancelación Directamente", type="primary", key="send_cancel_btn"):
-                        with st.spinner("Conectando con el servidor SMTP y enviando correo..."):
-                            exito = enviar_correo_background(excel_cancelados, nombre_archivo_cancelados)
-                            if exito:
-                                st.success("📬 ¡Correo de cancelaciones enviado con éxito!")
                 else:
-                    st.info("No se han detectado pedidos para cancelar.")
+                    st.info("No se han detectado pedidos para cancelar hoy.")
                 
             with pestana3:
                 st.subheader("Generación de Fichero Definitivo de Almacén")
@@ -322,27 +307,33 @@ if ficheros_listos:
                 Descarga primero el archivo de Cecopartners de la pestaña 1, súbelo a su plataforma, y cuando te devuelvan el **fichero con las referencias D**, cárgalo aquí abajo junto al listado de envíos globales de Amazon:
                 """)
                 
-                # Cargadores de la pestaña 3
+                # Cargadores principales de la pestaña 3
                 col_c1, col_c2 = st.columns(2)
                 with col_c1:
                     cecopartners_downloaded_file = st.file_uploader("1. Subir Fichero Descargado de Cecopartners (Con las D)", type=["csv", "xlsx"], key="ceco_almacen")
                 with col_c2:
                     sran_shipments_file = st.file_uploader("2. Subir Nuevo Informe Global de Envíos (CSV de Amazon SRAN)", type=["csv", "txt"], key="sran_shipments")
                 
-                # Cargador opcional del pantallazo/fichero diario variable de transportistas
+                # CORRECCIÓN: El cargador de correo y pantallazo diario ahora está SIEMPRE VISIBLE al inicio de la pestaña 3
                 st.markdown("---")
-                fichero_nuevo_diario = st.file_uploader("Adjuntar el nuevo fichero diario o pantallazo de transportistas (Opcional)", type=["png", "jpg", "jpeg", "pdf", "xlsx", "csv"], key="fichero_diario_transp")
+                st.subheader("📧 Servidor Automatizado de Correo (Pantallazo Diario / Cancelaciones)")
+                fichero_nuevo_diario = st.file_uploader("Adjuntar el nuevo fichero diario o pantallazo de transportistas", type=["png", "jpg", "jpeg", "pdf", "xlsx", "csv"], key="fichero_diario_transp")
                 
-                if fichero_nuevo_diario is not None:
-                    st.info(f"📂 Archivo diario listo: **{fichero_nuevo_diario.name}**")
-                    if st.button("📧 Enviar Correo con Pantallazo Diario adjunto", key="send_extra_mail"):
-                        with st.spinner("Enviando correo con el archivo diario adjunto..."):
-                            excel_to_send = to_excel(df_cancelaciones) if not df_cancelaciones.empty else to_excel(pd.DataFrame([{"Info": "No cancel orders today"}]))
-                            exito_mail = enviar_correo_background(excel_to_send, "CancelOrders.xlsx", fichero_nuevo_diario)
-                            if exito_mail:
-                                st.success("📬 ¡Correo con el Pantallazo Diario enviado con éxito!")
+                if st.button("🚀 Enviar Correo a Soporte de Amazon (Directo desde la App)", key="send_global_mail_btn", type="primary"):
+                    with st.spinner("Conectando con el servidor SMTP y enviando correo con los adjuntos..."):
+                        # Si la lista de cancelaciones está vacía, mandamos un aviso formal para no mandar un Excel roto
+                        if not df_cancelaciones.empty:
+                            excel_to_send = to_excel(df_cancelaciones)
+                            filename_to_send = "CancelOrders_SellerFlexFR.xlsx"
+                        else:
+                            excel_to_send = to_excel(pd.DataFrame([{"Aviso": "No cancel orders today"}]))
+                            filename_to_send = "No_Cancel_Orders.xlsx"
+                            
+                        exito_mail = enviar_correo_background(excel_to_send, filename_to_send, fichero_nuevo_diario)
+                        if exito_mail:
+                            st.success("📬 ¡Correo enviado con éxito a fr-sellerflex-support@amazon.com con copia a Juan y Antonio!")
 
-                # CRUCE DE DATOS POR CSV SRAN DE AMAZON
+                # CRUCE DE DATOS PRECISO SOLICITADO
                 if cecopartners_downloaded_file is not None and sran_shipments_file is not None:
                     df_ceco_in = load_data(cecopartners_downloaded_file)
                     
@@ -358,48 +349,49 @@ if ficheros_listos:
                     
                     if df_ceco_in is not None and not df_ceco_in.empty and df_sran is not None and not df_sran.empty:
                         try:
+                            # Hacemos una copia exacta del archivo devuelto por Cecopartners para no alterar ninguna columna original
                             df_almacen_fr = df_ceco_in.copy()
                             
-                            # Normalizamos cabeceras del CSV de Amazon SRAN
+                            # Normalizamos cabeceras del CSV de Amazon SRAN por caracteres corruptos (ej: Identificador de env√≠o)
                             df_sran.columns = [str(c).replace('env√≠o', 'envío').strip() for c in df_sran.columns]
                             
                             col_sran_pedido = 'Identificador de pedido de cliente'
                             col_sran_envio = 'Identificador de envío'
                             
-                            # Mapeamos la lista de recogida original (Barra lateral) para rescatar la Zona mediante el ID de envío
+                            # CRUCE 1 (Para obtener P): Cruzamos columna B (Identificador de envío) del nuevo fichero con columna F (Identificador de pedido) de lista recogida
                             mapa_recogida_zona = dict(zip(df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip(), df_pedidos_recoger['Zona'].astype(str).str.strip()))
                             df_sran['Zona_Calculada'] = df_sran[col_sran_envio].astype(str).str.strip().map(mapa_recogida_zona).fillna("")
                             
-                            # Creación de mapas definitivos indexados por el Número de Pedido de Amazon
+                            # Crear mapas maestros basados en la columna de unión común: Identificador de pedido de cliente
                             mapa_sran_u = dict(zip(df_sran[col_sran_pedido].astype(str).str.strip(), df_sran[col_sran_envio].astype(str).str.strip()))
                             mapa_sran_p = dict(zip(df_sran[col_sran_pedido].astype(str).str.strip(), df_sran['Zona_Calculada'].astype(str).str.strip()))
                             
-                            # Buscemos la columna de cruce de Cecopartners
+                            # CRUCE 2 (Para obtener U): Localizamos la columna de cruce de Cecopartners ('NÚMERO DE LÍNEA DE PEDIDO DE CLIENTE')
                             dict_cols_ceco = {col.lower().strip(): col for col in df_almacen_fr.columns}
                             clave_ceco = dict_cols_ceco.get('número de línea de pedido de cliente', df_almacen_fr.columns[-9] if len(df_almacen_fr.columns) > 9 else df_almacen_fr.columns[-1])
                             
                             pedidos_ceco_claves = df_almacen_fr[clave_ceco].astype(str).str.strip()
                             
-                            # Inyección estricta y limpia de datos sin alterar el resto del archivo
+                            # Inyección exacta de los datos calculados en las columnas A y B del archivo base
                             df_almacen_fr['U'] = pedidos_ceco_claves.map(mapa_sran_u).fillna("")
                             df_almacen_fr['P'] = pedidos_ceco_claves.map(mapa_sran_p).fillna("")
                             
-                            # NUEVA MEJORA EN AGENCIA: Si existe en la Opción 2 se mapea dinámicamente, si no se usa el valor estático
+                            # Inyección de Agencia (Dinámica por mapeo o estática de fallback)
                             df_almacen_fr['Agencia'] = pedidos_ceco_claves.map(mapa_pedido_largo_a_agencia).fillna('AMZN_FR_SH_SD')
                             
-                            # Borrado automático de columnas basura
+                            # Borrado automático de columnas basura ('FALSE', 'Disponible')
                             columnas_a_borrar = [c for c in df_almacen_fr.columns if str(c).upper() in ['FALSE', 'DISPONIBLE']]
                             if columnas_a_borrar:
                                 df_almacen_fr.drop(columns=columnas_a_borrar, inplace=True)
                             
-                            # Reordenación para fijar P, U y Agencia al principio
+                            # Reordenación para fijar P, U y Agencia al principio del Excel resultante
                             cols_ordenadas = ['P', 'U', 'Agencia'] + [c for c in df_almacen_fr.columns if c not in ['P', 'U', 'Agencia']]
                             df_almacen_fr = df_almacen_fr[cols_ordenadas]
                             
-                            # NUEVA MEJORA: Habilitar data_editor interactivo para permitir cambios manuales directamente en las agencias o celdas
                             st.subheader("📝 Tabla Editable de Almacén Francia")
-                            st.markdown("Puedes hacer doble clic sobre cualquier celda de la columna **Agencia** (o cualquier otra) para modificar su valor en vivo antes de descargar.")
+                            st.markdown("Puedes modificar cualquier valor de la columna **Agencia** directamente en la pantalla antes de descargar.")
                             
+                            # Editor interactivo en pantalla
                             df_editable_final = st.data_editor(df_almacen_fr, use_container_width=True, num_rows="dynamic")
                             
                             st.download_button(
