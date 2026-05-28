@@ -17,7 +17,7 @@ st.set_page_config(page_title="Seller Flex FR Automator", layout="wide", page_ic
 
 st.title("📦 Automatización Seller Flex FR - Cecopartners")
 st.markdown("""
-Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia (filtrando referencias con stock ≤ 2) y segmenta la información para Cecopartners, cancelaciones por email directo y almacén.
+Esta aplicación procesa los ficheros de Seller Flex, comprueba la disponibilidad en el Stock de Francia (filtrando referencias con stock disponible ≤ 2) y segmenta la información para Cecopartners, cancelaciones por email directo y almacén.
 """)
 
 st.sidebar.header("Carga de Ficheros Principales")
@@ -215,8 +215,7 @@ if ficheros_listos:
             df_pedidos_recoger['Identificador_Clean'] = df_pedidos_recoger['Identificador de pedido'].astype(str).str.strip()
             df_pedidos_recoger['Número_Pedido_Final'] = df_pedidos_recoger['Identificador_Clean'].map(mapa_envio_pedido).fillna("")
             
-            # Mapeos maestros basados en listas posicionales para evitar duplicados en la P y la Agencia
-            # Guardamos agrupado por pedido para poder extraer de uno en uno consecutivamente
+            # PROTECCIÓN DE REPETIDOS (Fichero Recogida): Agrupamos en listas por pedido para consumirlos uno a uno de forma secuencial
             mapa_pedido_largo_a_zonas_list = df_pedidos_recoger.groupby('Número_Pedido_Final')['Zona'].apply(lambda x: x.astype(str).str.strip().tolist()).to_dict()
             
             dict_cols_pr = {col.lower().strip(): col for col in df_pedidos_recoger.columns}
@@ -226,15 +225,18 @@ if ficheros_listos:
             else:
                 mapa_pedido_largo_a_agencias_list = {}
 
-            # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock ----
+            # ---- PROCESAMIENTO 3: Mapeo de Unidades de Stock CORREGIDO ----
             col_stock_ref = df_stock.columns[0]
+            
+            # AJUSTE FIJO: Lectura estricta sobre la columna F 'StockDisponible'
             col_stock_cant = None
             for col in df_stock.columns:
-                if any(x in col.lower() for x in ['disponible', 'physique', 'stock', 'cantidad', 'unidades']):
+                if 'disponible' in col.lower() or 'stockdisponible' in col.lower():
                     col_stock_cant = col
                     break
+            
             if not col_stock_cant:
-                col_stock_cant = df_stock.columns[1]
+                col_stock_cant = df_stock.columns[5] if len(df_stock.columns) > 5 else df_stock.columns[1]
             
             df_stock[col_stock_ref] = df_stock[col_stock_ref].astype(str).str.strip().apply(lambda x: x.lstrip('0'))
             df_stock[col_stock_cant] = pd.to_numeric(df_stock[col_stock_cant], errors='coerce').fillna(0)
@@ -242,7 +244,7 @@ if ficheros_listos:
             mapa_referencias_stock = dict(zip(df_stock[col_stock_ref], df_stock[col_stock_cant]))
             df_pedidos_recoger['Stock_Actual'] = df_pedidos_recoger['SKU_Limpio'].map(mapa_referencias_stock).fillna(0)
             
-            # Filtrado por stock mínimo ≤ 2
+            # Regla de corte: stock disponible > 2 disponible. Si es <= 2, va a cancelaciones.
             df_pedidos_recoger['Disponible'] = df_pedidos_recoger['Stock_Actual'] > 2
             
             # ---- FILTRADO Y DIVISIÓN ----
@@ -281,7 +283,7 @@ if ficheros_listos:
                 df_cancelaciones = pd.DataFrame(columns=['Node ID', 'Order number', 'Shipment ID', 'ASIN', 'Reason'])
                 
             # ---- RENDERIZADO EN STREAMLIT ----
-            st.success("✨ ¡Cálculos base realizados correctamente!")
+            st.success("✨ ¡Cálculos base realizados correctamente bajo la columna StockDisponible!")
             
             pestana1, pestana2, pestana3 = st.tabs(["📤 Fichero Subida (Plantilla Cecopartners)", "❌ Cancelaciones (OOO)", "🇫🇷 D-PEDIDOS Francia"])
             
@@ -372,55 +374,52 @@ if ficheros_listos:
                             col_sran_pedido = 'Identificador de pedido de cliente'
                             col_sran_envio = 'Identificador de envío'
                             
-                            # ---- SOLUCIÓN AL BUG DE REPETIDOS: MAPEO SECUENCIAL NO DESTRUCTIVO ----
-                            # En lugar de diccionarios planos, agrupamos los envíos de Amazon en listas por cada pedido
+                            # ---- BLINDAJE EXTRA DE REPETIDOS (Amazon SRAN): Agrupamos en listas ordenadas ----
                             mapa_sran_u_list = df_sran.groupby(col_sran_pedido)[col_sran_envio].apply(lambda x: x.astype(str).str.strip().tolist()).to_dict()
                             
-                            # Buscamos la columna de cruce clave de Cecopartners
+                            # Buscemos la columna de cruce clave de Cecopartners ('NÚMERO DE LÍNEA DE PEDIDO DE CLIENTE')
                             dict_cols_ceco = {col.lower().strip(): col for col in df_almacen_fr.columns}
                             clave_ceco = dict_cols_ceco.get('número de línea de pedido de cliente', df_almacen_fr.columns[-9] if len(df_almacen_fr.columns) > 9 else df_almacen_fr.columns[-1])
                             
-                            # Inicializamos las listas vacías para rellenar fila por fila de forma ordenada
                             lista_final_u = []
                             lista_final_p = []
                             lista_final_agencia = []
                             
-                            # Duplicamos temporalmente las listas de memoria para ir consumiéndolas (`.pop(0)`)
+                            # Duplicamos listas locales consumibles (`.pop(0)`) para asegurar identificadores únicos en filas iguales
                             mapas_u_consumibles = {k: list(v) for k, v in mapa_sran_u_list.items()}
                             mapas_p_consumibles = {k: list(v) for k, v in mapa_pedido_largo_a_zonas_list.items()}
                             mapas_agencia_consumibles = {k: list(v) for k, v in mapa_pedido_largo_a_agencias_list.items()}
                             
-                            # Iteramos registro por registro del archivo de Cecopartners
                             for idx, row in df_almacen_fr.iterrows():
                                 codigo_pedido = str(row[clave_ceco]).strip()
                                 
-                                # Extraemos e inyectamos de forma estricta la U independiente correspondiente
+                                # Asignación secuencial e independiente de U (Identificador Envío)
                                 if codigo_pedido in mapas_u_consumibles and len(mapas_u_consumibles[codigo_pedido]) > 0:
                                     envio_asignado = mapas_u_consumibles[codigo_pedido].pop(0)
                                 else:
                                     envio_asignado = ""
                                 lista_final_u.append(envio_asignado)
                                 
-                                # Extraemos e inyectamos la P independiente correspondiente
+                                # Asignación secuencial e independiente de P (Zona)
                                 if codigo_pedido in mapas_p_consumibles and len(mapas_p_consumibles[codigo_pedido]) > 0:
                                     zona_asignada = mapas_p_consumibles[codigo_pedido].pop(0)
                                 else:
                                     zona_asignada = ""
                                 lista_final_p.append(zona_asignada)
                                 
-                                # Extraemos e inyectamos la Agencia correspondiente
+                                # Asignación secuencial e independiente de Agencia
                                 if codigo_pedido in mapas_agencia_consumibles and len(mapas_agencia_consumibles[codigo_pedido]) > 0:
                                     agencia_asignada = mapas_agencia_consumibles[codigo_pedido].pop(0)
                                 else:
                                     agencia_asignada = 'AMZN_FR_SH_SD'
                                 lista_final_agencia.append(agencia_asignada)
                             
-                            # Escribimos los resultados secuenciales exactos en las columnas correspondientes
+                            # Inyectamos de forma limpia los resultados
                             df_almacen_fr['U'] = lista_final_u
                             df_almacen_fr['P'] = lista_final_p
                             df_almacen_fr['Agencia'] = lista_final_agencia
                             
-                            # Borrado automático de columnas basura ('FALSE', 'Disponible')
+                            # Borrado automático de columnas basura
                             columnas_a_borrar = [c for c in df_almacen_fr.columns if str(c).upper() in ['FALSE', 'DISPONIBLE']]
                             if columnas_a_borrar:
                                 df_almacen_fr.drop(columns=columnas_a_borrar, inplace=True)
